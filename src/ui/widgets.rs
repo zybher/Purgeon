@@ -1,0 +1,239 @@
+//! Custom-painted controls: cards, tiles, switch, segmented control, icons.
+
+use crate::anim::*;
+use crate::theme::*;
+use eframe::egui::{self, pos2, vec2, Align2, Color32, Painter, Pos2, Rect, Response, Rounding, Sense, Shape, Stroke, Ui};
+
+pub const R_CARD: f32 = 12.0;
+
+/// A card surface with a soft shadow and a hairline border
+pub fn card(p: &Painter, r: Rect, fill: Color32) {
+    let sh = egui::epaint::Shadow { offset: vec2(0.0, 4.0), blur: 14.0, spread: 0.0, color: Color32::from_black_alpha(70) };
+    p.add(sh.as_shape(r, Rounding::same(R_CARD)));
+    p.rect_filled(r, R_CARD, fill);
+    p.rect_stroke(r, R_CARD, Stroke::new(1.0_f32, border()));
+}
+
+/// A clickable card that brightens and lifts a little under the pointer.
+/// Returns the response and the lifted rect to paint the contents into.
+pub fn card_button(ui: &mut Ui, r: Rect, id: egui::Id) -> (Response, Rect) {
+    let resp = ui.interact(r, id, Sense::click());
+    let h = spring(ui.ctx(), id.with("lift"), resp.hovered(), 18.0);
+    let pr = ease(ui.ctx(), id.with("prs"), resp.is_pointer_button_down_on());
+    let lr = r.translate(vec2(0.0, -2.0 * h + pr * 1.0));
+    card(ui.painter(), lr, mix(crate::theme::card(), card_hi(), h));
+    if h > 0.01 {
+        ui.painter().rect_stroke(lr, R_CARD, Stroke::new(1.0_f32, wa((h * 14.0) as u8)));
+    }
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    (resp, lr)
+}
+
+/// A caption over a value, laid out in a small tile
+pub fn tile(p: &Painter, r: Rect, caption: &str, value: &str, dot: Option<Color32>) {
+    p.rect_filled(r, 10.0, crate::theme::card());
+    p.rect_stroke(r, 10.0, Stroke::new(1.0_f32, border()));
+    let mut x = r.min.x + 14.0;
+    if let Some(c) = dot {
+        p.circle_filled(pos2(x + 3.0, r.min.y + 18.0), 3.5, c);
+        x += 12.0;
+    }
+    p.text(pos2(x, r.min.y + 18.0), Align2::LEFT_CENTER, caption, reg(11.5), txt_faint());
+    p.text(pos2(r.min.x + 14.0, r.max.y - 18.0), Align2::LEFT_CENTER, value, sb(17.0), txt());
+}
+
+/// Lays out `n` equal tiles of at least `min_w` in rows; returns their rects and the height used
+pub fn tile_grid(origin: Pos2, w: f32, n: usize, min_w: f32, h: f32, gap: f32) -> (Vec<Rect>, f32) {
+    let cols = (((w + gap) / (min_w + gap)).floor() as usize).clamp(1, n.max(1));
+    let tw = (w - gap * (cols as f32 - 1.0)) / cols as f32;
+    let rows = n.div_ceil(cols);
+    let rects = (0..n)
+        .map(|i| {
+            let (c, r) = (i % cols, i / cols);
+            Rect::from_min_size(pos2(origin.x + c as f32 * (tw + gap), origin.y + r as f32 * (h + gap)), vec2(tw, h))
+        })
+        .collect();
+    (rects, rows as f32 * h + (rows as f32 - 1.0).max(0.0) * gap)
+}
+
+/// iOS-style switch; flips `on` when clicked
+pub fn switch(ui: &mut Ui, r: Rect, on: &mut bool) -> Response {
+    let resp = ui.allocate_rect(r, Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+    }
+    let ctx = ui.ctx();
+    let t = spring(ctx, resp.id.with("knob"), *on, 22.0);
+    let (h, pr) = hover_fx(ctx, &resp);
+    let p = ui.painter();
+    let track = mix(mix(Color32::from_gray(0x33), Color32::from_gray(0x3d), h), ACCENT, t);
+    p.rect_filled(r, r.height() / 2.0, track);
+    let rad = r.height() / 2.0 - 2.5;
+    // the knob stretches a little while pressed, like iOS
+    let stretch = pr * 4.0;
+    let x0 = r.min.x + 2.5 + rad;
+    let x1 = r.max.x - 2.5 - rad;
+    let cx = x0 + (x1 - x0) * t;
+    let kr = Rect::from_center_size(pos2(cx, r.center().y), vec2(rad * 2.0 + stretch, rad * 2.0));
+    let kr = kr.translate(vec2(if *on { -stretch / 2.0 } else { stretch / 2.0 }, 0.0));
+    p.rect_filled(kr.translate(vec2(0.0, 1.0)), rad, Color32::from_black_alpha(60));
+    p.rect_filled(kr, rad, Color32::WHITE);
+    if resp.hovered() {
+        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
+}
+
+/// Segmented control with a sliding thumb; returns true when the pick changed
+pub fn segmented(ui: &mut Ui, r: Rect, opts: &[&str], sel: &mut usize, id: egui::Id) -> bool {
+    let p = ui.painter().clone();
+    p.rect_filled(r, 8.0, well());
+    p.rect_stroke(r, 8.0, Stroke::new(1.0_f32, border()));
+    let n = opts.len().max(1) as f32;
+    let sw = (r.width() - 4.0) / n;
+    let tx = glide(ui.ctx(), id.with("thumb"), *sel as f32, 16.0);
+    let thumb = Rect::from_min_size(pos2(r.min.x + 2.0 + tx * sw, r.min.y + 2.0), vec2(sw, r.height() - 4.0));
+    p.rect_filled(thumb.translate(vec2(0.0, 1.0)), 6.0, Color32::from_black_alpha(50));
+    p.rect_filled(thumb, 6.0, Color32::from_gray(0x2e));
+    let mut changed = false;
+    for (i, o) in opts.iter().enumerate() {
+        let cr = Rect::from_min_size(pos2(r.min.x + 2.0 + i as f32 * sw, r.min.y), vec2(sw, r.height()));
+        let resp = ui.interact(cr, id.with(i), Sense::click());
+        let (h, _) = hover_fx(ui.ctx(), &resp);
+        let on = (tx - i as f32).abs() < 0.5;
+        let col = if on { hi() } else { mix(txt_faint(), txt(), h) };
+        p.text(cr.center(), Align2::CENTER_CENTER, *o, sb(11.5), col);
+        if resp.clicked() && *sel != i {
+            *sel = i;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// A thin rounded meter bar
+pub fn meter(p: &Painter, r: Rect, frac: f32, col: Color32) {
+    p.rect_filled(r, r.height() / 2.0, wa(12));
+    let f = frac.clamp(0.0, 1.0);
+    if f > 0.0 {
+        let w = (r.width() * f).max(r.height());
+        p.rect_filled(Rect::from_min_size(r.min, vec2(w, r.height())), r.height() / 2.0, col);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Icon {
+    Overview,
+    Processes,
+    Cpu,
+    Memory,
+    Gpu,
+    Sensors,
+    Search,
+}
+
+/// Small line icons painted from shapes (18 px box around `c`)
+pub fn icon(p: &Painter, kind: Icon, c: Pos2, col: Color32) {
+    let s = Stroke::new(1.4_f32, col);
+    match kind {
+        Icon::Overview => {
+            for (dx, dy) in [(-4.5, -4.5), (4.5, -4.5), (-4.5, 4.5), (4.5, 4.5)] {
+                p.rect_stroke(Rect::from_center_size(c + vec2(dx, dy), vec2(6.5, 6.5)), 2.0, s);
+            }
+        }
+        Icon::Processes => {
+            for k in [-5.0, 0.0, 5.0] {
+                p.circle_filled(c + vec2(-6.0, k), 1.3, col);
+                p.line_segment([c + vec2(-2.5, k), c + vec2(7.0, k)], s);
+            }
+        }
+        Icon::Cpu => {
+            p.rect_stroke(Rect::from_center_size(c, vec2(11.0, 11.0)), 2.5, s);
+            p.rect_filled(Rect::from_center_size(c, vec2(4.0, 4.0)), 1.0, col);
+            for k in [-3.0, 0.0, 3.0] {
+                p.line_segment([c + vec2(k, -5.5), c + vec2(k, -8.0)], s);
+                p.line_segment([c + vec2(k, 5.5), c + vec2(k, 8.0)], s);
+                p.line_segment([c + vec2(-5.5, k), c + vec2(-8.0, k)], s);
+                p.line_segment([c + vec2(5.5, k), c + vec2(8.0, k)], s);
+            }
+        }
+        Icon::Memory => {
+            p.rect_stroke(Rect::from_center_size(c + vec2(0.0, -1.0), vec2(16.0, 9.0)), 2.0, s);
+            for k in [-4.5, -1.5, 1.5, 4.5] {
+                p.rect_filled(Rect::from_center_size(c + vec2(k, -1.0), vec2(1.6, 4.0)), 0.5, col);
+            }
+            for k in [-6.0, -3.0, 0.0, 3.0, 6.0] {
+                p.line_segment([c + vec2(k, 3.5), c + vec2(k, 6.5)], s);
+            }
+        }
+        Icon::Gpu => {
+            p.rect_stroke(Rect::from_center_size(c + vec2(1.0, 0.0), vec2(14.0, 10.0)), 2.0, s);
+            p.circle_stroke(c + vec2(1.0, 0.0), 2.8, s);
+            p.line_segment([c + vec2(-6.0, -5.0), c + vec2(-8.0, -5.0)], s);
+            p.line_segment([c + vec2(-8.0, -5.0), c + vec2(-8.0, 7.0)], s);
+        }
+        Icon::Sensors => {
+            p.line_segment([c + vec2(0.0, -7.0), c + vec2(0.0, 2.5)], Stroke::new(3.6_f32, col));
+            p.line_segment([c + vec2(0.0, -6.5), c + vec2(0.0, 2.5)], Stroke::new(1.6_f32, bg()));
+            p.circle_filled(c + vec2(0.0, 4.5), 3.6, col);
+            p.line_segment([c + vec2(0.0, -1.0), c + vec2(0.0, 4.0)], Stroke::new(1.6_f32, col));
+        }
+        Icon::Search => {
+            p.circle_stroke(c + vec2(-1.5, -1.5), 4.6, s);
+            p.line_segment([c + vec2(2.0, 2.0), c + vec2(5.5, 5.5)], Stroke::new(1.6_f32, col));
+        }
+    }
+}
+
+/// The Purgeon mark: a blue rounded square with a pulse line
+pub fn logo(p: &Painter, c: Pos2, size: f32) {
+    let r = Rect::from_center_size(c, vec2(size, size));
+    let mut m = egui::epaint::Mesh::default();
+    let (top, bot) = (Color32::from_rgb(96, 165, 250), Color32::from_rgb(37, 99, 235));
+    // gradient square built from the rounded rect's outline
+    let pts = rounded_pts(r, size * 0.26, 6);
+    let cidx = m.vertices.len() as u32;
+    m.colored_vertex(c, mix(top, bot, 0.5));
+    for q in &pts {
+        let k = (q.y - r.min.y) / r.height();
+        m.colored_vertex(*q, mix(top, bot, k));
+    }
+    let n = pts.len() as u32;
+    for i in 0..n {
+        m.add_triangle(cidx, cidx + 1 + i, cidx + 1 + (i + 1) % n);
+    }
+    p.add(Shape::mesh(m));
+    let pulse = [(0.16, 0.56), (0.36, 0.56), (0.45, 0.32), (0.56, 0.74), (0.65, 0.48), (0.84, 0.48)];
+    let line: Vec<Pos2> = pulse.iter().map(|(x, y)| pos2(r.min.x + x * size, r.min.y + y * size)).collect();
+    p.add(Shape::line(line, Stroke::new(size * 0.09, Color32::WHITE)));
+}
+
+fn rounded_pts(r: Rect, rad: f32, seg: usize) -> Vec<Pos2> {
+    use std::f32::consts::PI;
+    let mut v = Vec::new();
+    let corners = [
+        (pos2(r.max.x - rad, r.min.y + rad), -PI / 2.0),
+        (pos2(r.max.x - rad, r.max.y - rad), 0.0),
+        (pos2(r.min.x + rad, r.max.y - rad), PI / 2.0),
+        (pos2(r.min.x + rad, r.min.y + rad), PI),
+    ];
+    for (cc, a0) in corners {
+        for i in 0..=seg {
+            let a = a0 + PI / 2.0 * i as f32 / seg as f32;
+            v.push(pos2(cc.x + rad * a.cos(), cc.y + rad * a.sin()));
+        }
+    }
+    v
+}
+
+/// A letter avatar for a process (stable hue from its name)
+pub fn avatar(p: &Painter, r: Rect, name: &str) {
+    let h = name.bytes().fold(2166136261u32, |a, b| (a ^ b.to_ascii_lowercase() as u32).wrapping_mul(16777619));
+    let hue = (h % 360) as f32 / 360.0;
+    let col: Color32 = egui::ecolor::Hsva::new(hue, 0.45, 0.55, 1.0).into();
+    p.rect_filled(r, 5.0, col.gamma_multiply(0.85));
+    let ch = name.chars().next().unwrap_or('?').to_ascii_uppercase();
+    p.text(r.center() + vec2(0.0, 0.5), Align2::CENTER_CENTER, ch, sb(10.5), Color32::WHITE);
+}
