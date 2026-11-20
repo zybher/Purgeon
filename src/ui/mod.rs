@@ -204,12 +204,35 @@ impl App {
         } else {
             ("Standard user", "Some readings (memory lists, protected processes, sensors) need Purgeon to run as administrator.")
         };
-        let lr = p.text(pos2(rect.min.x + 37.0, ay), Align2::LEFT_CENTER, t, reg(11.5), txt_faint());
-        ui.interact(lr.expand(4.0), egui::Id::new("admin_tip"), Sense::hover()).on_hover_text(tip);
+        if admin {
+            let lr = p.text(pos2(rect.min.x + 37.0, ay), Align2::LEFT_CENTER, t, reg(11.5), txt_faint());
+            ui.interact(lr.expand(4.0), egui::Id::new("admin_tip"), Sense::hover()).on_hover_text(tip);
+        } else {
+            // "Standard user · Elevate": restarts through the UAC prompt
+            let br = Rect::from_min_max(pos2(rect.min.x + 16.0, ay - 12.0), pos2(rect.max.x - 16.0, ay + 12.0));
+            let resp = ui.interact(br, egui::Id::new("admin_btn"), Sense::click());
+            let (h, pr) = hover_fx(ctx, &resp);
+            p.rect_filled(br.shrink(pr * 1.5), 8.0, wa((h * 12.0) as u8));
+            p.text(pos2(rect.min.x + 37.0, ay), Align2::LEFT_CENTER, t, reg(11.5), txt_faint());
+            p.text(pos2(br.max.x - 10.0, ay), Align2::RIGHT_CENTER, "Elevate", sb(11.5), mix(ACCENT, hi(), h * 0.3));
+            if resp.hovered() {
+                ctx.set_cursor_icon(CursorIcon::PointingHand);
+            }
+            let resp = resp.on_hover_text("Restart Purgeon as administrator to unlock per-process physical disk activity, memory lists and protected processes.");
+            if resp.clicked() && crate::platform::relaunch_as_admin() {
+                crate::sys::etw::stop();
+                std::process::exit(0);
+            }
+        }
     }
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // kernel trace sessions outlive the process unless stopped
+        crate::sys::etw::stop();
+    }
+
     fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
         chrome().to_normalized_gamma_f32()
     }

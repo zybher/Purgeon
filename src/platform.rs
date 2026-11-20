@@ -75,3 +75,18 @@ pub fn app_icon() -> eframe::egui::IconData {
 pub fn trim_memory() {
     unsafe { win::SetProcessWorkingSetSize(win::GetCurrentProcess(), usize::MAX, usize::MAX) };
 }
+
+#[link(name = "shell32")]
+extern "system" {
+    fn ShellExecuteW(hwnd: isize, op: *const u16, file: *const u16, params: *const u16, dir: *const u16, show: i32) -> isize;
+}
+
+/// Starts a new copy of Purgeon through the UAC prompt. True if it launched
+/// (the caller then exits); false if the user declined or it failed.
+pub fn relaunch_as_admin() -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let args: Vec<String> = std::env::args().skip(1).map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a }).collect();
+    let (op, file, params) = (win::wide("runas"), win::wide(&exe.to_string_lossy()), win::wide(&args.join(" ")));
+    let r = unsafe { ShellExecuteW(0, op.as_ptr(), file.as_ptr(), params.as_ptr(), std::ptr::null(), 1) };
+    r > 32
+}

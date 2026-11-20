@@ -20,6 +20,7 @@ pub enum Col {
     Ws,
     Commit,
     Io,
+    Disk,
     Gpu,
     Vram,
     Threads,
@@ -28,13 +29,14 @@ pub enum Col {
 
 /// Columns right of the name: (column, title, width, explanation, priority).
 /// Lower priority columns are hidden first when the window is too narrow.
-const COLS: [(Col, &str, f32, &str, u8); 10] = [
+const COLS: [(Col, &str, f32, &str, u8); 11] = [
     (Col::Pid, "PID", 62.0, "Process ID. Grouped rows show how many processes share the name.", 9),
     (Col::Cpu, "CPU", 68.0, "Share of the whole CPU over the last update (100% = every logical processor busy).", 9),
     (Col::Private, "Memory", 88.0, "Private working set: physical memory only this process uses. Task Manager's \"Memory\" column.", 9),
     (Col::Ws, "Working set", 96.0, "All physical memory mapped by the process, including pages shared with others (DLLs, mapped files).", 3),
     (Col::Commit, "Commit", 86.0, "Private bytes the process has committed (RAM or page file).", 2),
     (Col::Io, "I/O", 86.0, "Bytes read + written per second across file, network and device I/O.", 8),
+    (Col::Disk, "Disk", 86.0, "Physical disk reads + writes per second: only I/O that reached the disk (no network, no cache hits). Needs administrator.", 8),
     (Col::Gpu, "GPU", 62.0, "Busiest GPU engine this process uses (the way Task Manager counts it).", 8),
     (Col::Vram, "VRAM", 84.0, "Dedicated GPU memory the process holds, summed over all GPUs.", 8),
     (Col::Threads, "Threads", 64.0, "Number of threads.", 1),
@@ -52,6 +54,7 @@ struct Row {
     ws: u64,
     commit: u64,
     io: f64,
+    disk: f64,
     gpu: f32,
     vram: u64,
     threads: u32,
@@ -96,6 +99,7 @@ impl TableState {
                     ws: 0,
                     commit: 0,
                     io: 0.0,
+                    disk: 0.0,
                     gpu: 0.0,
                     vram: 0,
                     threads: 0,
@@ -110,6 +114,7 @@ impl TableState {
                 r.ws += p.working_set;
                 r.commit += p.commit;
                 r.io += p.io_read + p.io_write;
+                r.disk += p.disk_read + p.disk_write;
                 r.gpu += p.gpu;
                 r.vram += p.vram;
                 r.threads += p.threads;
@@ -130,6 +135,7 @@ impl TableState {
                     ws: p.working_set,
                     commit: p.commit,
                     io: p.io_read + p.io_write,
+                    disk: p.disk_read + p.disk_write,
                     gpu: p.gpu,
                     vram: p.vram,
                     threads: p.threads,
@@ -148,6 +154,7 @@ impl TableState {
                 Col::Ws => a.ws.cmp(&b.ws),
                 Col::Commit => a.commit.cmp(&b.commit),
                 Col::Io => a.io.total_cmp(&b.io),
+                Col::Disk => a.disk.total_cmp(&b.disk),
                 Col::Gpu => a.gpu.total_cmp(&b.gpu),
                 Col::Vram => a.vram.cmp(&b.vram),
                 Col::Threads => a.threads.cmp(&b.threads),
@@ -225,7 +232,7 @@ impl TableState {
         let inner = card.shrink2(vec2(8.0, 0.0));
 
         // Visible columns: drop the least important ones until the name column has room
-        let mut cols: Vec<(Col, &str, f32, &str, u8)> = COLS.to_vec();
+        let mut cols: Vec<(Col, &str, f32, &str, u8)> = COLS.iter().copied().filter(|c| c.0 != Col::Disk || s.disk_trace).collect();
         while cols.iter().map(|c| c.2).sum::<f32>() + 230.0 > inner.width() {
             match cols.iter().enumerate().filter(|(_, c)| c.4 < 9).min_by_key(|(_, c)| c.4) {
                 Some((i, _)) => {
@@ -323,6 +330,7 @@ impl TableState {
                         Col::Ws => (fmt::bytes(row.ws), 0.0, MEM_COL, false),
                         Col::Commit => (fmt::bytes(row.commit), 0.0, MEM_COL, false),
                         Col::Io => (fmt::rate(row.io), (row.io / (50.0 * 1048576.0)) as f32, IO_COL, false),
+                        Col::Disk => (fmt::rate(row.disk), (row.disk / (50.0 * 1048576.0)) as f32, DISK_COL, row.disk == 0.0),
                         Col::Gpu => (fmt::pct(row.gpu), row.gpu / 40.0, GPU_COL, false),
                         Col::Vram => (if row.vram == 0 { "0".into() } else { fmt::bytes(row.vram) }, row.vram as f32 / total_vram * 4.0, VRAM_COL, row.vram == 0),
                         Col::Threads => (fmt::thousands(row.threads as u64), 0.0, CPU_COL, true),

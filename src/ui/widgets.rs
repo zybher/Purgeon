@@ -40,8 +40,29 @@ pub fn tile(p: &Painter, r: Rect, caption: &str, value: &str, dot: Option<Color3
         p.circle_filled(pos2(x + 3.0, r.min.y + 18.0), 3.5, c);
         x += 12.0;
     }
-    p.text(pos2(x, r.min.y + 18.0), Align2::LEFT_CENTER, caption, reg(11.5), txt_faint());
-    p.text(pos2(r.min.x + 14.0, r.max.y - 18.0), Align2::LEFT_CENTER, value, sb(17.0), txt());
+    fit(p, pos2(x, r.min.y + 18.0), Align2::LEFT_CENTER, caption, reg(11.5), r.max.x - 10.0 - x, txt_faint());
+    fit(p, pos2(r.min.x + 14.0, r.max.y - 18.0), Align2::LEFT_CENTER, value, sb(17.0), r.width() - 24.0, txt());
+}
+
+/// Draws text that never spills past `max_w`: it first shrinks (down to 72% of the size),
+/// then cuts the end off with an ellipsis. Returns the painted rect.
+pub fn fit(p: &Painter, pos: Pos2, align: Align2, s: &str, font: egui::FontId, max_w: f32, col: Color32) -> Rect {
+    let width = |t: &str, f: &egui::FontId| p.layout_no_wrap(t.to_string(), f.clone(), col).size().x;
+    let max_w = max_w.max(8.0);
+    let mut f = font.clone();
+    let w = width(s, &f);
+    if w <= max_w {
+        return p.text(pos, align, s, f, col);
+    }
+    f.size = (font.size * max_w / w).max(font.size * 0.72).floor();
+    if width(s, &f) <= max_w {
+        return p.text(pos, align, s, f, col);
+    }
+    let mut out: String = s.to_string();
+    while !out.is_empty() && width(&format!("{out}…"), &f) > max_w {
+        out.pop();
+    }
+    p.text(pos, align, format!("{}…", out.trim_end()), f, col)
 }
 
 /// Lays out `n` equal tiles of at least `min_w` in rows; returns their rects and the height used

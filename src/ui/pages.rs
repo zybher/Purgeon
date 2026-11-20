@@ -16,7 +16,7 @@ fn header(ui: &mut Ui, title: &str, sub: &str) {
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 58.0), Sense::hover());
     let p = ui.painter();
     p.text(pos2(r.min.x, r.min.y + 14.0), Align2::LEFT_CENTER, title, sb(24.0), txt());
-    p.text(pos2(r.min.x, r.min.y + 40.0), Align2::LEFT_CENTER, sub, reg(12.5), txt_faint());
+    widgets::fit(p, pos2(r.min.x, r.min.y + 40.0), Align2::LEFT_CENTER, sub, reg(12.5), r.width(), txt_faint());
 }
 
 fn section(ui: &mut Ui, title: &str) {
@@ -27,9 +27,13 @@ fn section(ui: &mut Ui, title: &str) {
 
 /// Caption with a coloured dot
 fn caption(p: &Painter, x: f32, y: f32, text: &str, col: Color32) -> f32 {
+    caption_w(p, x, y, text, col, f32::INFINITY)
+}
+
+/// Caption that stays within `max_w` (shrinks, then ellipsizes)
+fn caption_w(p: &Painter, x: f32, y: f32, text: &str, col: Color32, max_w: f32) -> f32 {
     p.circle_filled(pos2(x + 4.0, y), 4.0, col);
-    let r = p.text(pos2(x + 14.0, y), Align2::LEFT_CENTER, text, sb(12.5), txt_dim());
-    r.max.x
+    widgets::fit(p, pos2(x + 14.0, y), Align2::LEFT_CENTER, text, sb(12.5), max_w - 14.0, txt_dim()).max.x
 }
 
 /// A big number with an optional dim suffix
@@ -59,13 +63,15 @@ struct Group {
     cpu: f32,
     mem: u64,
     vram: u64,
+    disk_r: f64,
+    disk_w: f64,
 }
 
 /// Processes summed by image name ("chrome.exe ×24")
 fn grouped(s: &Snapshot) -> Vec<Group> {
     let mut m: HashMap<&str, Group> = HashMap::new();
     for p in &s.procs {
-        let g = m.entry(p.name.as_str()).or_insert_with(|| Group { name: p.name.clone(), path: None, count: 0, cpu: 0.0, mem: 0, vram: 0 });
+        let g = m.entry(p.name.as_str()).or_insert_with(|| Group { name: p.name.clone(), path: None, count: 0, cpu: 0.0, mem: 0, vram: 0, disk_r: 0.0, disk_w: 0.0 });
         g.count += 1;
         if g.path.is_none() {
             g.path = p.path.clone();
@@ -73,15 +79,22 @@ fn grouped(s: &Snapshot) -> Vec<Group> {
         g.cpu += p.cpu;
         g.mem += p.private_ws;
         g.vram += p.vram;
+        g.disk_r += p.disk_read;
+        g.disk_w += p.disk_write;
     }
     m.into_values().collect()
 }
 
 /// A card listing the top groups with a bar each
 fn top_list(ui: &mut Ui, r: Rect, title: &str, col: Color32, rows: &[(&Group, f32, String)]) {
+    top_list_w(ui, r, title, col, rows, 86.0)
+}
+
+/// `top_list` with room for a wider value text on the right
+fn top_list_w(ui: &mut Ui, r: Rect, title: &str, col: Color32, rows: &[(&Group, f32, String)], value_w: f32) {
     let p = ui.painter().clone();
     widgets::card(&p, r, card());
-    caption(&p, r.min.x + 18.0, r.min.y + 24.0, title, col);
+    caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, title, col, r.width() - 36.0);
     let max = rows.iter().map(|x| x.1).fold(0.0001_f32, f32::max);
     let row_h = 30.0;
     for (i, (g, v, txtv)) in rows.iter().enumerate() {
@@ -95,7 +108,7 @@ fn top_list(ui: &mut Ui, r: Rect, title: &str, col: Color32, rows: &[(&Group, f3
         super::icons::paint(ui.ctx(), &p, Rect::from_center_size(pos2(rr.min.x + 20.0, rr.center().y), vec2(18.0, 18.0)), &g.name, g.path.as_ref());
         p.text(pos2(rr.max.x - 10.0, rr.center().y), Align2::RIGHT_CENTER, txtv, sb(12.5), txt());
         let bw = (rr.width() * 0.28).min(140.0);
-        let br = Rect::from_min_size(pos2(rr.max.x - 86.0 - bw, rr.center().y - 2.5), vec2(bw, 5.0));
+        let br = Rect::from_min_size(pos2(rr.max.x - value_w - bw, rr.center().y - 2.5), vec2(bw, 5.0));
         // Name (and ×count) must end before the bar starts
         let room = br.min.x - 14.0 - (rr.min.x + 36.0) - if g.count > 1 { 34.0 } else { 0.0 };
         let name = super::table::clip(&p, &g.name, room.max(20.0));
@@ -125,7 +138,7 @@ pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let v = glide(&ctx, egui::Id::new("ov_cpu_v"), s.cpu, 10.0);
         big(&p, r.min.x + 18.0, r.min.y + 62.0, &format!("{v:.0}%"), "", 32.0);
         let sub = format!("{} cores  ·  {} threads", s.info.physical.max(1), s.info.logical);
-        p.text(pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, sub, reg(12.0), txt_faint());
+        widgets::fit(&p, pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, &sub, reg(12.0), r.width() - 36.0, txt_faint());
         let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 112.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
         let series = [Series { data: &s.h_cpu, col: CPU_COL, fill: true, width: 1.6 }];
         graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hov(ui, gr), interval: s.interval, label: &pct_label });
@@ -139,7 +152,7 @@ pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let used = glide(&ctx, egui::Id::new("ov_mem_v"), s.mem.used() as f32 / 1073741824.0, 10.0);
         big(&p, r.min.x + 18.0, r.min.y + 62.0, &format!("{used:.1}"), &format!("/ {} GB", fmt::gb(s.mem.total)), 32.0);
         let sub = format!("{:.0}% in use  ·  {} committed", s.mem.used_frac() * 100.0, fmt::bytes(s.mem.commit));
-        p.text(pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, sub, reg(12.0), txt_faint());
+        widgets::fit(&p, pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, &sub, reg(12.0), r.width() - 36.0, txt_faint());
         let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 112.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
         let series = [Series { data: &s.h_mem, col: MEM_COL, fill: true, width: 1.6 }];
         graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hov(ui, gr), interval: s.interval, label: &pct_label });
@@ -157,7 +170,7 @@ pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                 let temp = g.sensors.temp.map(|t| format!("{t:.0}°C")).unwrap_or_default();
                 big(&p, r.min.x + 18.0, r.min.y + 62.0, &format!("{v:.0}%"), &temp, 32.0);
                 let sub = format!("{} / {} VRAM", fmt::bytes(g.dedicated_used), fmt::bytes(g.dedicated_total));
-                p.text(pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, sub, reg(12.0), txt_faint());
+                widgets::fit(&p, pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, &sub, reg(12.0), r.width() - 36.0, txt_faint());
                 let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 112.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
                 let series = [
                     Series { data: &s.h_gpu[i], col: GPU_COL, fill: true, width: 1.6 },
@@ -213,8 +226,12 @@ pub fn cpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: true, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
 
         ui.add_space(GAP);
-        let tiles: [(&str, String); 8] = [
+        let speed = if s.clocks.avg_mhz > 0.0 { format!("{:.2} GHz", s.clocks.avg_mhz / 1000.0) } else { "—".into() };
+        let tm = s.clocks.utility.map(|u| format!("{u:.1}%")).unwrap_or_else(|| "—".into());
+        let tiles: [(&str, String); 10] = [
             ("Utilization", format!("{:.1}%", s.cpu)),
+            ("Task Manager figure", tm),
+            ("Speed", speed),
             ("Kernel time", format!("{:.1}%", s.kernel)),
             ("Processes", fmt::thousands(s.nprocs as u64)),
             ("Threads", fmt::thousands(s.threads as u64)),
@@ -228,6 +245,12 @@ pub fn cpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         ui.allocate_exact_size(vec2(w, h), Sense::hover());
         for (r, (c, v)) in rects.iter().zip(&tiles) {
             widgets::tile(&p, *r, c, v, None);
+            if *c == "Task Manager figure" {
+                ui.interact(*r, egui::Id::new("tm_tip"), Sense::hover()).on_hover_text(
+                    "Task Manager's \"% Processor Utility\": busy time multiplied by how fast the clock ran versus base speed. \
+                     It reads high when the CPU turbo-boosts and low when it parks. \"Utilization\" is the plain share of time the cores were busy.",
+                );
+            }
         }
 
         ui.add_space(GAP);
@@ -240,7 +263,10 @@ pub fn cpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
             p.rect_filled(*r, 10.0, card());
             p.rect_stroke(*r, 10.0, Stroke::new(1.0_f32, border()));
             let v = s.cores[i];
-            p.text(pos2(r.min.x + 12.0, r.min.y + 16.0), Align2::LEFT_CENTER, format!("CPU {i}"), reg(11.5), txt_faint());
+            let lr = p.text(pos2(r.min.x + 12.0, r.min.y + 16.0), Align2::LEFT_CENTER, format!("CPU {i}"), reg(11.5), txt_faint());
+            if let Some(m) = s.clocks.mhz.get(i).filter(|m| **m > 0.0) {
+                p.text(pos2(lr.max.x + 6.0, r.min.y + 16.0), Align2::LEFT_CENTER, format!("{:.2} GHz", m / 1000.0), reg(10.5), txt_faint());
+            }
             p.text(pos2(r.max.x - 12.0, r.min.y + 16.0), Align2::RIGHT_CENTER, format!("{v:.0}%"), sb(12.5), mix(txt_dim(), hi(), v / 100.0));
             let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 30.0), pos2(r.max.x - 1.0, r.max.y - 6.0));
             let data = s.h_cores.get(i).map(|v| v.as_slice()).unwrap_or(&[]);
@@ -383,19 +409,26 @@ pub fn disk(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let p = ui.painter().clone();
         for (i, d) in s.disks.iter().enumerate() {
             let h = &s.h_disk[i];
-            let (r, _) = ui.allocate_exact_size(vec2(w, 300.0), Sense::hover());
+            let (r, _) = ui.allocate_exact_size(vec2(w, 316.0), Sense::hover());
             widgets::card(&p, r, card());
-            caption(&p, r.min.x + 18.0, r.min.y + 24.0, &disk_title(d), DISK_COL);
-            let x = caption(&p, r.max.x - 250.0, r.min.y + 24.0, "Active time", DISK_COL);
-            let x = caption(&p, x + 14.0, r.min.y + 24.0, "Read", IO_COL);
-            caption(&p, x + 14.0, r.min.y + 24.0, "Write", WARN_COL);
+            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, &disk_title(d), DISK_COL, r.width() - 36.0);
             let v = glide(&ctx, egui::Id::new(("disk_v", i)), d.active, 10.0);
             big(&p, r.min.x + 18.0, r.min.y + 60.0, &format!("{v:.0}%"), &format!("active  ·  {:.1} ms response", d.resp_ms), 30.0);
 
-            // Left: active time. Right: read / write throughput, scaled to its own peak
-            let half = (r.width() - 2.0) / 2.0;
-            let ga = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 90.0), pos2(r.min.x + half - 8.0, r.max.y - 12.0));
-            let gb = Rect::from_min_max(pos2(r.min.x + half + 8.0, r.min.y + 90.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
+            // Two labelled panels: active time (0-100%) and throughput (scaled to its own peak)
+            let half = (r.width() - 36.0 - GAP) / 2.0;
+            let pa = Rect::from_min_size(pos2(r.min.x + 18.0, r.min.y + 92.0), vec2(half, r.height() - 92.0 - 16.0));
+            let pb = Rect::from_min_size(pos2(pa.max.x + GAP, pa.min.y), pa.size());
+            for pr in [pa, pb] {
+                p.rect_filled(pr, 8.0, well());
+                p.rect_stroke(pr, 8.0, Stroke::new(1.0_f32, border()));
+            }
+            p.text(pos2(pa.min.x + 12.0, pa.min.y + 16.0), Align2::LEFT_CENTER, "Active time", sb(11.5), txt_dim());
+            p.text(pos2(pa.max.x - 12.0, pa.min.y + 16.0), Align2::RIGHT_CENTER, "100%", reg(10.5), txt_faint());
+            let lx = caption(&p, pb.min.x + 8.0, pb.min.y + 16.0, "Read", IO_COL);
+            caption(&p, lx + 10.0, pb.min.y + 16.0, "Write", WARN_COL);
+            let ga = Rect::from_min_max(pos2(pa.min.x + 1.0, pa.min.y + 30.0), pos2(pa.max.x - 1.0, pa.max.y - 6.0));
+            let gb = Rect::from_min_max(pos2(pb.min.x + 1.0, pb.min.y + 30.0), pos2(pb.max.x - 1.0, pb.max.y - 6.0));
             let series = [Series { data: &h[0], col: DISK_COL, fill: true, width: 1.6 }];
             graph::paint(&p, ga, &Graph { series: &series, max: 100.0, scroll, grid: true, hover: hover_in(ui, ga), interval: s.interval, label: &pct_label });
             let peak = h[1].iter().chain(h[2].iter()).fold(1048576.0_f32, |a, b| a.max(*b)) * 1.15;
@@ -405,7 +438,7 @@ pub fn disk(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                 Series { data: &h[2], col: WARN_COL, fill: false, width: 1.3 },
             ];
             graph::paint(&p, gb, &Graph { series: &series, max: peak, scroll, grid: true, hover: hover_in(ui, gb), interval: s.interval, label: &rate_label });
-            p.text(pos2(gb.max.x - 8.0, gb.min.y + 10.0), Align2::RIGHT_CENTER, fmt::rate(peak as f64), reg(10.5), txt_faint());
+            p.text(pos2(pb.max.x - 12.0, pb.min.y + 16.0), Align2::RIGHT_CENTER, fmt::rate(peak as f64), reg(10.5), txt_faint());
 
             ui.add_space(12.0);
             let mut tiles: Vec<(String, String, Option<Color32>)> = vec![
@@ -426,6 +459,43 @@ pub fn disk(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
             }
             ui.add_space(GAP + 8.0);
         }
+
+        // Which programs are using the disk
+        if s.disk_trace {
+            let groups = grouped(s);
+            let mut by: Vec<&Group> = groups.iter().filter(|g| g.disk_r + g.disk_w > 0.0).collect();
+            by.sort_by(|a, b| (b.disk_r + b.disk_w).total_cmp(&(a.disk_r + a.disk_w)));
+            let rows: Vec<(&Group, f32, String)> = by
+                .iter()
+                .take(10)
+                .map(|g| (*g, (g.disk_r + g.disk_w) as f32, format!("R {}  ·  W {}", fmt::rate(g.disk_r), fmt::rate(g.disk_w))))
+                .collect();
+            let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
+            top_list_w(ui, r, "Programs using the disk (physical I/O)", DISK_COL, &rows, 170.0);
+            let (or, ow) = s.disk_orphan;
+            if or + ow > 0.0 {
+                // I/O whose thread exited before we could name its process: shown so the sum adds up
+                let t = format!("+ {} from programs that already exited", fmt::rate(or + ow));
+                widgets::fit(&p, pos2(r.max.x - 18.0, r.min.y + 24.0), Align2::RIGHT_CENTER, &t, reg(11.0), r.width() * 0.4, txt_faint());
+            }
+            if rows.is_empty() {
+                p.text(pos2(r.min.x + 18.0, r.min.y + 60.0), Align2::LEFT_CENTER, "No disk activity in the last update", reg(12.5), txt_faint());
+            }
+        } else {
+            let (r, _) = ui.allocate_exact_size(vec2(w, 74.0), Sense::hover());
+            widgets::card(&p, r, card());
+            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, "Which programs are using the disk", DISK_COL, r.width() - 36.0);
+            widgets::fit(
+                &p,
+                pos2(r.min.x + 18.0, r.min.y + 50.0),
+                Align2::LEFT_CENTER,
+                "Click Elevate (bottom left) to see per-program physical reads, writes and response time.",
+                reg(12.0),
+                r.width() - 36.0,
+                txt_faint(),
+            );
+        }
+        ui.add_space(GAP);
     });
     None
 }
