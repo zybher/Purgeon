@@ -46,6 +46,8 @@ pub struct App {
     dwm_done: bool,
     table: table::TableState,
     shot: Option<crate::shot::Shot>,
+    trimmed: bool,
+    was_focused: bool,
 }
 
 impl App {
@@ -60,6 +62,8 @@ impl App {
             dwm_done: false,
             table: table::TableState::default(),
             shot: crate::shot::Shot::from_env(),
+            trimmed: false,
+            was_focused: true,
         }
     }
 
@@ -211,6 +215,13 @@ impl eframe::App for App {
         if let Some(s) = self.shared.take() {
             self.snap = Some(s);
         }
+        // Trim once startup is over, and again whenever the window loses focus (Tangra's trick)
+        let focused = ctx.input(|i| i.focused);
+        if (!self.trimmed && self.page_at.elapsed().as_secs_f32() > 2.0 && self.snap.is_some()) || (self.was_focused && !focused) {
+            self.trimmed = true;
+            crate::platform::trim_memory();
+        }
+        self.was_focused = focused;
         if !self.dwm_done {
             self.dwm_done = crate::platform::style_window();
             if !self.dwm_done {

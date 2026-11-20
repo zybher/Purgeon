@@ -17,7 +17,7 @@ impl Shot {
 
     pub fn tick(&mut self, ctx: &egui::Context) {
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
-        if !self.asked && self.start.elapsed().as_secs_f32() > 4.5 {
+        if !self.asked && self.start.elapsed().as_secs_f32() > delay() {
             self.asked = true;
             ctx.send_viewport_cmd(ViewportCommand::Screenshot);
         }
@@ -32,6 +32,11 @@ impl Shot {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
     }
+}
+
+/// Seconds before the capture (`PURGEON_SHOT_SECS`, default 4.5)
+fn delay() -> f32 {
+    std::env::var("PURGEON_SHOT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(4.5)
 }
 
 /// Minimal PNG writer (stored deflate blocks)

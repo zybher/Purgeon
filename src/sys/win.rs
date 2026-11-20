@@ -157,6 +157,7 @@ extern "system" {
     pub fn GetLogicalProcessorInformationEx(rel: u32, buf: *mut c_void, len: *mut u32) -> i32;
     pub fn GetCurrentProcess() -> isize;
     pub fn CloseHandle(h: isize) -> i32;
+    pub fn SetProcessWorkingSetSize(p: isize, min: usize, max: usize) -> i32;
 }
 
 #[link(name = "advapi32")]

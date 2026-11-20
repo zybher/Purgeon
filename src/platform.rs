@@ -69,3 +69,9 @@ pub fn app_icon() -> eframe::egui::IconData {
     }
     eframe::egui::IconData { rgba, width: S as u32, height: S as u32 }
 }
+
+/// Hands every page we are not actively using back to Windows (startup-only pages such as the
+/// shader compile and font build). The working set then regrows only to what drawing needs.
+pub fn trim_memory() {
+    unsafe { win::SetProcessWorkingSetSize(win::GetCurrentProcess(), usize::MAX, usize::MAX) };
+}
