@@ -2,6 +2,7 @@
 
 mod graph;
 mod pages;
+mod icons;
 mod table;
 mod widgets;
 
@@ -24,15 +25,17 @@ pub enum Page {
     Processes,
     Cpu,
     Memory,
+    Disk,
     Gpu,
     Sensors,
 }
 
-const NAV: [(Page, Icon, &str, bool); 6] = [
+const NAV: [(Page, Icon, &str, bool); 7] = [
     (Page::Overview, Icon::Overview, "Overview", true),
     (Page::Processes, Icon::Processes, "Processes", true),
     (Page::Cpu, Icon::Cpu, "CPU", true),
     (Page::Memory, Icon::Memory, "Memory", true),
+    (Page::Disk, Icon::Disk, "Disk", true),
     (Page::Gpu, Icon::Gpu, "GPU", true),
     (Page::Sensors, Icon::Sensors, "Sensors", false),
 ];
@@ -273,6 +276,7 @@ impl eframe::App for App {
                         }
                         Page::Cpu => pages::cpu(&mut cui, &s, scroll),
                         Page::Memory => pages::memory(&mut cui, &s, scroll),
+                        Page::Disk => pages::disk(&mut cui, &s, scroll),
                         Page::Gpu => pages::gpu(&mut cui, &s, scroll),
                         Page::Sensors => pages::soon(&mut cui, Icon::Sensors, "Sensors", &[
                             "GPU temperature, clocks, fan and power (NVML on NVIDIA)",
@@ -394,6 +398,7 @@ fn start_page() -> Page {
         Some("processes") => Page::Processes,
         Some("cpu") => Page::Cpu,
         Some("memory") => Page::Memory,
+        Some("disk") => Page::Disk,
         Some("gpu") => Page::Gpu,
         Some("sensors") => Page::Sensors,
         _ => Page::Overview,

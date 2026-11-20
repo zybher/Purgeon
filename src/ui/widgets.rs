@@ -129,6 +129,7 @@ pub enum Icon {
     Processes,
     Cpu,
     Memory,
+    Disk,
     Gpu,
     Sensors,
     Search,
@@ -167,6 +168,11 @@ pub fn icon(p: &Painter, kind: Icon, c: Pos2, col: Color32) {
             for k in [-6.0, -3.0, 0.0, 3.0, 6.0] {
                 p.line_segment([c + vec2(k, 3.5), c + vec2(k, 6.5)], s);
             }
+        }
+        Icon::Disk => {
+            p.rect_stroke(Rect::from_center_size(c, vec2(15.0, 12.0)), 2.5, s);
+            p.line_segment([c + vec2(-7.5, 2.0), c + vec2(7.5, 2.0)], s);
+            p.circle_filled(c + vec2(4.5, 4.0), 1.1, col);
         }
         Icon::Gpu => {
             p.rect_stroke(Rect::from_center_size(c + vec2(1.0, 0.0), vec2(14.0, 10.0)), 2.0, s);

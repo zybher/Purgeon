@@ -157,6 +157,8 @@ extern "system" {
     pub fn GetLogicalProcessorInformationEx(rel: u32, buf: *mut c_void, len: *mut u32) -> i32;
     pub fn GetCurrentProcess() -> isize;
     pub fn CloseHandle(h: isize) -> i32;
+    pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+    pub fn QueryFullProcessImageNameW(h: isize, flags: u32, buf: *mut u16, len: *mut u32) -> i32;
     pub fn SetProcessWorkingSetSize(p: isize, min: usize, max: usize) -> i32;
 }
 
@@ -247,5 +249,20 @@ pub fn physical_cores() -> usize {
             off += size;
         }
         n
+    }
+}
+
+/// Full path of a process's executable (works for most processes without admin)
+pub fn process_path(pid: u32) -> Option<String> {
+    unsafe {
+        let h = OpenProcess(0x1000, 0, pid); // PROCESS_QUERY_LIMITED_INFORMATION
+        if h == 0 {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len) != 0;
+        CloseHandle(h);
+        ok.then(|| String::from_utf16_lossy(&buf[..len as usize]))
     }
 }

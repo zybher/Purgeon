@@ -44,6 +44,7 @@ const COLS: [(Col, &str, f32, &str, u8); 10] = [
 #[derive(Clone)]
 struct Row {
     name: String,
+    path: Option<std::sync::Arc<str>>,
     pid: Option<u32>,
     count: u32,
     cpu: f32,
@@ -87,6 +88,7 @@ impl TableState {
             for p in s.procs.iter().filter(|p| hit(&p.name, p.pid)) {
                 let r = m.entry(p.name.to_lowercase()).or_insert_with(|| Row {
                     name: p.name.clone(),
+                    path: None,
                     pid: None,
                     count: 0,
                     cpu: 0.0,
@@ -100,6 +102,9 @@ impl TableState {
                     handles: 0,
                 });
                 r.count += 1;
+                if r.path.is_none() {
+                    r.path = p.path.clone();
+                }
                 r.cpu += p.cpu;
                 r.private_ws += p.private_ws;
                 r.ws += p.working_set;
@@ -117,6 +122,7 @@ impl TableState {
                 .filter(|p| hit(&p.name, p.pid))
                 .map(|p| Row {
                     name: p.name.clone(),
+                    path: p.path.clone(),
                     pid: Some(p.pid),
                     count: 1,
                     cpu: p.cpu,
@@ -300,7 +306,7 @@ impl TableState {
                 let cy = r.center().y;
 
                 // name
-                widgets::avatar(p, Rect::from_center_size(pos2(r.min.x + 18.0, cy), vec2(18.0, 18.0)), &row.name);
+                super::icons::paint(&ctx, p, Rect::from_center_size(pos2(r.min.x + 18.0, cy), vec2(18.0, 18.0)), &row.name, row.path.as_ref());
                 let maxw = name_w - 50.0;
                 let name = clip(p, &row.name, maxw);
                 let nr = p.text(pos2(r.min.x + 34.0, cy), Align2::LEFT_CENTER, name, reg(12.5), txt());

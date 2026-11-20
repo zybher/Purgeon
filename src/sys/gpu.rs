@@ -3,31 +3,12 @@
 //! DXGI, and temperature / clocks / power / fan from NVML on NVIDIA cards.
 #![allow(non_snake_case)]
 
+use super::pdh::{Counter, Query};
 use super::win::{wide, LUID};
 use std::collections::HashMap;
 use std::ffi::c_void;
 
 // ---------------------------------------------------------------- FFI
-
-#[repr(C)]
-struct PdhItem {
-    name: *const u16,
-    status: u32,
-    value: f64, // also read as i64 for PDH_FMT_LARGE (same 8 bytes)
-}
-
-const PDH_MORE_DATA: u32 = 0x8000_07D2;
-const PDH_FMT_DOUBLE: u32 = 0x200;
-const PDH_FMT_LARGE: u32 = 0x400;
-const PDH_FMT_NOCAP100: u32 = 0x8000;
-
-#[link(name = "pdh")]
-extern "system" {
-    fn PdhOpenQueryW(src: *const u16, user: usize, q: *mut isize) -> u32;
-    fn PdhAddEnglishCounterW(q: isize, path: *const u16, user: usize, c: *mut isize) -> u32;
-    fn PdhCollectQueryData(q: isize) -> u32;
-    fn PdhGetFormattedCounterArrayW(c: isize, fmt: u32, size: *mut u32, count: *mut u32, items: *mut PdhItem) -> u32;
-}
 
 #[repr(C)]
 struct DxgiDesc1 {
@@ -126,15 +107,14 @@ struct Adapter {
 }
 
 pub struct GpuSampler {
-    query: isize,
-    engine: isize,
-    proc_ded: isize,
-    proc_shared: isize,
-    ad_ded: isize,
-    ad_shared: isize,
+    q: Query,
+    engine: Counter,
+    proc_ded: Counter,
+    proc_shared: Counter,
+    ad_ded: Counter,
+    ad_shared: Counter,
     adapters: Vec<Adapter>,
     nvml: Option<Nvml>,
-    buf: Vec<u8>,
 }
 
 impl GpuSampler {
@@ -143,33 +123,24 @@ impl GpuSampler {
         if adapters.is_empty() {
             return None;
         }
-        let mut q = 0isize;
-        if unsafe { PdhOpenQueryW(std::ptr::null(), 0, &mut q) } != 0 {
-            return None;
-        }
-        let add = |path: &str| {
-            let mut c = 0isize;
-            let w = wide(path);
-            if unsafe { PdhAddEnglishCounterW(q, w.as_ptr(), 0, &mut c) } == 0 { c } else { 0 }
-        };
+        let q = Query::new()?;
         let s = GpuSampler {
-            query: q,
-            engine: add("\\GPU Engine(*)\\Utilization Percentage"),
-            proc_ded: add("\\GPU Process Memory(*)\\Dedicated Usage"),
-            proc_shared: add("\\GPU Process Memory(*)\\Shared Usage"),
-            ad_ded: add("\\GPU Adapter Memory(*)\\Dedicated Usage"),
-            ad_shared: add("\\GPU Adapter Memory(*)\\Shared Usage"),
+            engine: q.add(r"\GPU Engine(*)\Utilization Percentage"),
+            proc_ded: q.add(r"\GPU Process Memory(*)\Dedicated Usage"),
+            proc_shared: q.add(r"\GPU Process Memory(*)\Shared Usage"),
+            ad_ded: q.add(r"\GPU Adapter Memory(*)\Dedicated Usage"),
+            ad_shared: q.add(r"\GPU Adapter Memory(*)\Shared Usage"),
+            q,
             nvml: Nvml::load(&adapters),
             adapters,
-            buf: Vec::new(),
         };
-        unsafe { PdhCollectQueryData(q) }; // rate counters need a first sample
+        s.q.collect(); // rate counters need a first sample
         Some(s)
     }
 
     /// Reads every counter once. Returns the adapters and per-process use keyed by pid.
     pub fn sample(&mut self) -> (Vec<Gpu>, HashMap<u32, ProcGpu>) {
-        unsafe { PdhCollectQueryData(self.query) };
+        self.q.collect();
         let mut gpus: Vec<Gpu> = self
             .adapters
             .iter()
@@ -187,7 +158,7 @@ impl GpuSampler {
         // Engines: sum processes per physical engine, then a process's usage is its busiest engine
         let mut per_engine: HashMap<(u64, u32), (String, f32)> = HashMap::new();
         let mut per_proc: HashMap<(u32, u64, u32), f32> = HashMap::new();
-        for (inst, v) in self.read(self.engine, false) {
+        for (inst, v) in self.q.read(self.engine, false) {
             let Some(e) = parse(&inst) else { continue };
             let (Some(pid), Some(eng)) = (e.pid, e.eng) else { continue };
             let v = v as f32;
@@ -216,22 +187,22 @@ impl GpuSampler {
             g.engines = kinds;
         }
 
-        for (inst, v) in self.read(self.proc_ded, true) {
+        for (inst, v) in self.q.read(self.proc_ded, true) {
             if let Some(pid) = parse(&inst).and_then(|e| e.pid) {
                 procs.entry(pid).or_default().dedicated += v as u64;
             }
         }
-        for (inst, v) in self.read(self.proc_shared, true) {
+        for (inst, v) in self.q.read(self.proc_shared, true) {
             if let Some(pid) = parse(&inst).and_then(|e| e.pid) {
                 procs.entry(pid).or_default().shared += v as u64;
             }
         }
-        for (inst, v) in self.read(self.ad_ded, true) {
+        for (inst, v) in self.q.read(self.ad_ded, true) {
             if let Some(g) = parse(&inst).and_then(|e| gpus.iter_mut().find(|g| g.luid == e.luid)) {
                 g.dedicated_used += v as u64;
             }
         }
-        for (inst, v) in self.read(self.ad_shared, true) {
+        for (inst, v) in self.q.read(self.ad_shared, true) {
             if let Some(g) = parse(&inst).and_then(|e| gpus.iter_mut().find(|g| g.luid == e.luid)) {
                 g.shared_used += v as u64;
             }
@@ -244,42 +215,6 @@ impl GpuSampler {
             }
         }
         (gpus, procs)
-    }
-
-    /// (instance name, value) for every instance of a wildcard counter
-    fn read(&mut self, c: isize, large: bool) -> Vec<(String, f64)> {
-        if c == 0 {
-            return Vec::new();
-        }
-        let fmt = if large { PDH_FMT_LARGE } else { PDH_FMT_DOUBLE | PDH_FMT_NOCAP100 };
-        for _ in 0..4 {
-            let (mut size, mut count) = (self.buf.len() as u32, 0u32);
-            let r = unsafe { PdhGetFormattedCounterArrayW(c, fmt, &mut size, &mut count, self.buf.as_mut_ptr() as *mut PdhItem) };
-            if r == PDH_MORE_DATA || (r == 0 && self.buf.is_empty()) {
-                self.buf.resize(size as usize + 4096, 0);
-                continue;
-            }
-            if r != 0 {
-                return Vec::new();
-            }
-            let items = unsafe { std::slice::from_raw_parts(self.buf.as_ptr() as *const PdhItem, count as usize) };
-            return items
-                .iter()
-                .filter(|it| it.status <= 1 && !it.name.is_null()) // PDH_CSTATUS_VALID_DATA / NEW_DATA
-                .map(|it| {
-                    let name = unsafe {
-                        let mut n = 0;
-                        while *it.name.add(n) != 0 {
-                            n += 1;
-                        }
-                        String::from_utf16_lossy(std::slice::from_raw_parts(it.name, n))
-                    };
-                    let v = if large { it.value.to_bits() as i64 as f64 } else { it.value };
-                    (name, v)
-                })
-                .collect();
-        }
-        Vec::new()
     }
 }
 

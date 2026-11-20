@@ -54,6 +54,7 @@ fn pct_label(v: &[f32]) -> String {
 
 struct Group {
     name: String,
+    path: Option<std::sync::Arc<str>>,
     count: u32,
     cpu: f32,
     mem: u64,
@@ -64,8 +65,11 @@ struct Group {
 fn grouped(s: &Snapshot) -> Vec<Group> {
     let mut m: HashMap<&str, Group> = HashMap::new();
     for p in &s.procs {
-        let g = m.entry(p.name.as_str()).or_insert_with(|| Group { name: p.name.clone(), count: 0, cpu: 0.0, mem: 0, vram: 0 });
+        let g = m.entry(p.name.as_str()).or_insert_with(|| Group { name: p.name.clone(), path: None, count: 0, cpu: 0.0, mem: 0, vram: 0 });
         g.count += 1;
+        if g.path.is_none() {
+            g.path = p.path.clone();
+        }
         g.cpu += p.cpu;
         g.mem += p.private_ws;
         g.vram += p.vram;
@@ -88,7 +92,7 @@ fn top_list(ui: &mut Ui, r: Rect, title: &str, col: Color32, rows: &[(&Group, f3
         let resp = ui.interact(rr, ui.id().with((title, i)), Sense::hover());
         let h = ease(ui.ctx(), resp.id.with("h"), resp.hovered());
         p.rect_filled(rr, 7.0, wa((h * 9.0) as u8));
-        widgets::avatar(&p, Rect::from_center_size(pos2(rr.min.x + 20.0, rr.center().y), vec2(18.0, 18.0)), &g.name);
+        super::icons::paint(ui.ctx(), &p, Rect::from_center_size(pos2(rr.min.x + 20.0, rr.center().y), vec2(18.0, 18.0)), &g.name, g.path.as_ref());
         p.text(pos2(rr.max.x - 10.0, rr.center().y), Align2::RIGHT_CENTER, txtv, sb(12.5), txt());
         let bw = (rr.width() * 0.28).min(140.0);
         let br = Rect::from_min_size(pos2(rr.max.x - 86.0 - bw, rr.center().y - 2.5), vec2(bw, 5.0));
@@ -346,6 +350,82 @@ pub fn memory(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len() as f32 * 30.0), Sense::hover());
         top_list(ui, r, "Biggest memory users (private working set, grouped by name)", MEM_COL, &rows);
         ui.add_space(GAP);
+    });
+    None
+}
+
+fn rate_label(v: &[f32]) -> String {
+    match v {
+        [r, w, ..] => format!("R {}  ·  W {}", fmt::rate(*r as f64), fmt::rate(*w as f64)),
+        [a] => fmt::rate(*a as f64),
+        _ => String::new(),
+    }
+}
+
+fn disk_title(d: &crate::sys::disk::Disk) -> String {
+    if d.letters.is_empty() {
+        format!("Disk {}", d.index)
+    } else {
+        format!("Disk {}  ({})", d.index, d.letters.join(" "))
+    }
+}
+
+pub fn disk(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
+    ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        let w = ui.available_width();
+        let ctx = ui.ctx().clone();
+        let total_r: f64 = s.disks.iter().map(|d| d.read).sum();
+        let total_w: f64 = s.disks.iter().map(|d| d.write).sum();
+        header(ui, "Disk", &format!("{} physical disks  ·  reading {}  ·  writing {}", s.disks.len(), fmt::rate(total_r), fmt::rate(total_w)));
+        if s.disks.is_empty() {
+            return;
+        }
+        let p = ui.painter().clone();
+        for (i, d) in s.disks.iter().enumerate() {
+            let h = &s.h_disk[i];
+            let (r, _) = ui.allocate_exact_size(vec2(w, 300.0), Sense::hover());
+            widgets::card(&p, r, card());
+            caption(&p, r.min.x + 18.0, r.min.y + 24.0, &disk_title(d), DISK_COL);
+            let x = caption(&p, r.max.x - 250.0, r.min.y + 24.0, "Active time", DISK_COL);
+            let x = caption(&p, x + 14.0, r.min.y + 24.0, "Read", IO_COL);
+            caption(&p, x + 14.0, r.min.y + 24.0, "Write", WARN_COL);
+            let v = glide(&ctx, egui::Id::new(("disk_v", i)), d.active, 10.0);
+            big(&p, r.min.x + 18.0, r.min.y + 60.0, &format!("{v:.0}%"), &format!("active  ·  {:.1} ms response", d.resp_ms), 30.0);
+
+            // Left: active time. Right: read / write throughput, scaled to its own peak
+            let half = (r.width() - 2.0) / 2.0;
+            let ga = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 90.0), pos2(r.min.x + half - 8.0, r.max.y - 12.0));
+            let gb = Rect::from_min_max(pos2(r.min.x + half + 8.0, r.min.y + 90.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
+            let series = [Series { data: &h[0], col: DISK_COL, fill: true, width: 1.6 }];
+            graph::paint(&p, ga, &Graph { series: &series, max: 100.0, scroll, grid: true, hover: hover_in(ui, ga), interval: s.interval, label: &pct_label });
+            let peak = h[1].iter().chain(h[2].iter()).fold(1048576.0_f32, |a, b| a.max(*b)) * 1.15;
+            let peak = glide(&ctx, egui::Id::new(("disk_peak", i)), peak, 4.0);
+            let series = [
+                Series { data: &h[1], col: IO_COL, fill: true, width: 1.5 },
+                Series { data: &h[2], col: WARN_COL, fill: false, width: 1.3 },
+            ];
+            graph::paint(&p, gb, &Graph { series: &series, max: peak, scroll, grid: true, hover: hover_in(ui, gb), interval: s.interval, label: &rate_label });
+            p.text(pos2(gb.max.x - 8.0, gb.min.y + 10.0), Align2::RIGHT_CENTER, fmt::rate(peak as f64), reg(10.5), txt_faint());
+
+            ui.add_space(12.0);
+            let mut tiles: Vec<(String, String, Option<Color32>)> = vec![
+                ("Read speed".into(), fmt::rate(d.read), Some(IO_COL)),
+                ("Write speed".into(), fmt::rate(d.write), Some(WARN_COL)),
+                ("Active time".into(), format!("{:.1}%", d.active), Some(DISK_COL)),
+                ("Response time".into(), format!("{:.2} ms", d.resp_ms), None),
+                ("Queue length".into(), format!("{:.0}", d.queue), None),
+            ];
+            for (l, total, free) in &d.volumes {
+                tiles.push((format!("{l} used"), format!("{} / {}", fmt::bytes(total - free), fmt::bytes(*total)), None));
+            }
+            let o = ui.cursor().min;
+            let (rects, th) = widgets::tile_grid(o, w, tiles.len(), 170.0, 64.0, 12.0);
+            ui.allocate_exact_size(vec2(w, th), Sense::hover());
+            for (tr, (c, v, dcol)) in rects.iter().zip(&tiles) {
+                widgets::tile(&p, *tr, c, v, *dcol);
+            }
+            ui.add_space(GAP + 8.0);
+        }
     });
     None
 }

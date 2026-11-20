@@ -2,7 +2,9 @@
 //! of calls (one NtQuerySystemInformation for all processes) and publishes an immutable
 //! `Snapshot` the UI picks up.
 
+pub mod disk;
 pub mod gpu;
+mod pdh;
 pub mod win;
 
 use std::collections::{HashMap, VecDeque};
@@ -19,6 +21,8 @@ pub struct Proc {
     pub pid: u32,
     pub ppid: u32,
     pub name: String,
+    /// Executable path, when Windows lets us read it (shared between processes of the same exe)
+    pub path: Option<Arc<str>>,
     /// Share of the whole machine, 0..100
     pub cpu: f32,
     /// Private working set: what Task Manager calls "Memory"
@@ -99,6 +103,9 @@ pub struct Snapshot {
     /// Per GPU (same order as `gpus`): usage and dedicated memory use, both 0..100
     pub h_gpu: Vec<Vec<f32>>,
     pub h_vram: Vec<Vec<f32>>,
+    pub disks: Vec<disk::Disk>,
+    /// Per disk (same order as `disks`): active time 0..100, read and write bytes/s
+    pub h_disk: Vec<[Vec<f32>; 3]>,
 }
 
 pub struct Shared {
@@ -156,12 +163,17 @@ struct Collector {
     prev_cores: Vec<win::SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION>,
     /// (pid, create time) -> (cpu time, bytes read, bytes written)
     prev_procs: HashMap<(u32, i64), (u64, u64, u64)>,
+    /// (pid, create time) -> executable path, looked up once per process
+    paths: HashMap<(u32, i64), Option<Arc<str>>>,
+    interned: HashMap<String, Arc<str>>,
     h_cpu: VecDeque<f32>,
     h_kernel: VecDeque<f32>,
     h_mem: VecDeque<f32>,
     h_commit: VecDeque<f32>,
     h_cores: Vec<VecDeque<f32>>,
     gpu: Option<gpu::GpuSampler>,
+    disk: Option<disk::DiskSampler>,
+    h_disk: HashMap<String, [VecDeque<f32>; 3]>,
     /// luid -> (usage, vram) history
     h_gpu: HashMap<u64, (VecDeque<f32>, VecDeque<f32>)>,
 }
@@ -191,12 +203,16 @@ impl Collector {
             prev_sys: None,
             prev_cores: Vec::new(),
             prev_procs: HashMap::new(),
+            paths: HashMap::new(),
+            interned: HashMap::new(),
             h_cpu: VecDeque::with_capacity(HIST),
             h_kernel: VecDeque::with_capacity(HIST),
             h_mem: VecDeque::with_capacity(HIST),
             h_commit: VecDeque::with_capacity(HIST),
             h_cores: vec![VecDeque::with_capacity(HIST); n],
             gpu: gpu::GpuSampler::new(),
+            disk: disk::DiskSampler::new(),
+            h_disk: HashMap::new(),
             h_gpu: HashMap::new(),
         }
     }
@@ -267,6 +283,15 @@ impl Collector {
                 }
             }
         }
+        let disks = self.disk.as_mut().map(|d| d.sample()).unwrap_or_default();
+        let mut h_disk = Vec::with_capacity(disks.len());
+        for d in &disks {
+            let h = self.h_disk.entry(d.id.clone()).or_insert_with(|| std::array::from_fn(|_| VecDeque::with_capacity(HIST)));
+            push(&mut h[0], d.active);
+            push(&mut h[1], d.read as f32);
+            push(&mut h[2], d.write as f32);
+            h_disk.push(std::array::from_fn(|i| h[i].iter().copied().collect()));
+        }
         let (mut h_gpu, mut h_vram) = (Vec::new(), Vec::new());
         for g in &gpus {
             let h = self.h_gpu.entry(g.luid).or_insert_with(|| (VecDeque::with_capacity(HIST), VecDeque::with_capacity(HIST)));
@@ -310,6 +335,8 @@ impl Collector {
             gpus,
             h_gpu,
             h_vram,
+            disks,
+            h_disk,
         }
     }
 
@@ -362,11 +389,24 @@ impl Collector {
                 _ => (0.0, 0.0, 0.0),
             };
             next.insert(key, (cpu_t, rd, wr));
+            let path = match self.paths.get(&key) {
+                Some(p) => p.clone(),
+                None => {
+                    let p = if pid > 4 {
+                        win::process_path(pid).map(|s| self.interned.entry(s.clone()).or_insert_with(|| Arc::from(s.as_str())).clone())
+                    } else {
+                        None
+                    };
+                    self.paths.insert(key, p.clone());
+                    p
+                }
+            };
             if pid != 0 {
                 out.push(Proc {
                     pid,
                     ppid: p.InheritedFromUniqueProcessId as u32,
                     name,
+                    path,
                     cpu: cpu.clamp(0.0, 100.0),
                     private_ws: p.WorkingSetPrivateSize.max(0) as u64,
                     working_set: p.WorkingSetSize as u64,
@@ -384,6 +424,7 @@ impl Collector {
             }
             off += p.NextEntryOffset as usize;
         }
+        self.paths.retain(|k, _| next.contains_key(k));
         self.prev_procs = next;
         out
     }
