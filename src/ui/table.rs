@@ -20,20 +20,25 @@ pub enum Col {
     Ws,
     Commit,
     Io,
+    Gpu,
+    Vram,
     Threads,
     Handles,
 }
 
-/// Columns right of the name: (column, title, width, explanation)
-const COLS: [(Col, &str, f32, &str); 8] = [
-    (Col::Pid, "PID", 64.0, "Process ID. Grouped rows show how many processes share the name."),
-    (Col::Cpu, "CPU", 72.0, "Share of the whole CPU over the last update (100% = every logical processor busy)."),
-    (Col::Private, "Memory", 92.0, "Private working set: physical memory only this process uses. Task Manager's \"Memory\" column."),
-    (Col::Ws, "Working set", 100.0, "All physical memory mapped by the process, including pages shared with others (DLLs, mapped files)."),
-    (Col::Commit, "Commit", 92.0, "Private bytes the process has committed (RAM or page file)."),
-    (Col::Io, "I/O", 92.0, "Bytes read + written per second across file, network and device I/O."),
-    (Col::Threads, "Threads", 70.0, "Number of threads."),
-    (Col::Handles, "Handles", 76.0, "Number of open kernel object handles."),
+/// Columns right of the name: (column, title, width, explanation, priority).
+/// Lower priority columns are hidden first when the window is too narrow.
+const COLS: [(Col, &str, f32, &str, u8); 10] = [
+    (Col::Pid, "PID", 62.0, "Process ID. Grouped rows show how many processes share the name.", 9),
+    (Col::Cpu, "CPU", 68.0, "Share of the whole CPU over the last update (100% = every logical processor busy).", 9),
+    (Col::Private, "Memory", 88.0, "Private working set: physical memory only this process uses. Task Manager's \"Memory\" column.", 9),
+    (Col::Ws, "Working set", 96.0, "All physical memory mapped by the process, including pages shared with others (DLLs, mapped files).", 3),
+    (Col::Commit, "Commit", 86.0, "Private bytes the process has committed (RAM or page file).", 2),
+    (Col::Io, "I/O", 86.0, "Bytes read + written per second across file, network and device I/O.", 8),
+    (Col::Gpu, "GPU", 62.0, "Busiest GPU engine this process uses (the way Task Manager counts it).", 8),
+    (Col::Vram, "VRAM", 84.0, "Dedicated GPU memory the process holds, summed over all GPUs.", 8),
+    (Col::Threads, "Threads", 64.0, "Number of threads.", 1),
+    (Col::Handles, "Handles", 70.0, "Number of open kernel object handles.", 4),
 ];
 
 #[derive(Clone)]
@@ -46,6 +51,8 @@ struct Row {
     ws: u64,
     commit: u64,
     io: f64,
+    gpu: f32,
+    vram: u64,
     threads: u32,
     handles: u32,
 }
@@ -87,6 +94,8 @@ impl TableState {
                     ws: 0,
                     commit: 0,
                     io: 0.0,
+                    gpu: 0.0,
+                    vram: 0,
                     threads: 0,
                     handles: 0,
                 });
@@ -96,6 +105,8 @@ impl TableState {
                 r.ws += p.working_set;
                 r.commit += p.commit;
                 r.io += p.io_read + p.io_write;
+                r.gpu += p.gpu;
+                r.vram += p.vram;
                 r.threads += p.threads;
                 r.handles += p.handles;
             }
@@ -113,6 +124,8 @@ impl TableState {
                     ws: p.working_set,
                     commit: p.commit,
                     io: p.io_read + p.io_write,
+                    gpu: p.gpu,
+                    vram: p.vram,
                     threads: p.threads,
                     handles: p.handles,
                 })
@@ -129,6 +142,8 @@ impl TableState {
                 Col::Ws => a.ws.cmp(&b.ws),
                 Col::Commit => a.commit.cmp(&b.commit),
                 Col::Io => a.io.total_cmp(&b.io),
+                Col::Gpu => a.gpu.total_cmp(&b.gpu),
+                Col::Vram => a.vram.cmp(&b.vram),
                 Col::Threads => a.threads.cmp(&b.threads),
                 Col::Handles => a.handles.cmp(&b.handles),
             };
@@ -203,12 +218,21 @@ impl TableState {
         widgets::card(&p, card, crate::theme::card());
         let inner = card.shrink2(vec2(8.0, 0.0));
 
-        // column x ranges (right edges)
-        let fixed: f32 = COLS.iter().map(|c| c.2).sum();
+        // Visible columns: drop the least important ones until the name column has room
+        let mut cols: Vec<(Col, &str, f32, &str, u8)> = COLS.to_vec();
+        while cols.iter().map(|c| c.2).sum::<f32>() + 230.0 > inner.width() {
+            match cols.iter().enumerate().filter(|(_, c)| c.4 < 9).min_by_key(|(_, c)| c.4) {
+                Some((i, _)) => {
+                    cols.remove(i);
+                }
+                None => break,
+            }
+        }
+        let fixed: f32 = cols.iter().map(|c| c.2).sum();
         let name_w = (inner.width() - fixed - 10.0).max(160.0);
-        let mut xs = Vec::with_capacity(COLS.len());
+        let mut xs = Vec::with_capacity(cols.len());
         let mut x = inner.min.x + name_w;
-        for c in COLS {
+        for c in &cols {
             x += c.2;
             xs.push(x);
         }
@@ -247,7 +271,7 @@ impl TableState {
             }
         };
         header_cell(ui, Rect::from_min_max(head.min, pos2(inner.min.x + name_w, head.max.y)), Col::Name, "Name", "", false);
-        for (i, c) in COLS.iter().enumerate() {
+        for (i, c) in cols.iter().enumerate() {
             let r = Rect::from_min_max(pos2(xs[i] - c.2, head.min.y), pos2(xs[i], head.max.y));
             header_cell(ui, r, c.0, c.1, c.3, true);
         }
@@ -257,6 +281,7 @@ impl TableState {
         let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("proc_body"));
         bui.set_clip_rect(body.intersect(ui.clip_rect()));
         let total_mem = s.mem.total.max(1) as f32;
+        let total_vram = s.gpus.iter().map(|g| g.dedicated_total).max().unwrap_or(0).max(1) as f32;
         let rows = &self.rows;
         let mut clicked: Option<(String, Option<u32>)> = None;
         let group = self.group;
@@ -283,30 +308,26 @@ impl TableState {
                     p.text(pos2(nr.max.x + 6.0, cy), Align2::LEFT_CENTER, format!("×{}", row.count), reg(11.5), txt_faint());
                 }
 
-                let cell = |i: usize| Rect::from_min_max(pos2(xs[i] - COLS[i].2, r.min.y + 3.0), pos2(xs[i], r.max.y - 3.0));
-                let heat = |i: usize, k: f32, col: Color32| {
-                    let k = k.clamp(0.0, 1.0);
+                for (i, c) in cols.iter().enumerate() {
+                    let cell = Rect::from_min_max(pos2(xs[i] - c.2, r.min.y + 3.0), pos2(xs[i], r.max.y - 3.0));
+                    let (text, heat, hcol, dim) = match c.0 {
+                        Col::Pid => (row.pid.map_or_else(|| row.count.to_string(), |p| p.to_string()), 0.0, CPU_COL, true),
+                        Col::Cpu => (fmt::pct(row.cpu), row.cpu / 30.0, CPU_COL, false),
+                        Col::Private => (fmt::bytes(row.private_ws), row.private_ws as f32 / total_mem * 6.0, MEM_COL, false),
+                        Col::Ws => (fmt::bytes(row.ws), 0.0, MEM_COL, false),
+                        Col::Commit => (fmt::bytes(row.commit), 0.0, MEM_COL, false),
+                        Col::Io => (fmt::rate(row.io), (row.io / (50.0 * 1048576.0)) as f32, IO_COL, false),
+                        Col::Gpu => (fmt::pct(row.gpu), row.gpu / 40.0, GPU_COL, false),
+                        Col::Vram => (if row.vram == 0 { "0".into() } else { fmt::bytes(row.vram) }, row.vram as f32 / total_vram * 4.0, VRAM_COL, row.vram == 0),
+                        Col::Threads => (fmt::thousands(row.threads as u64), 0.0, CPU_COL, true),
+                        Col::Handles => (fmt::thousands(row.handles as u64), 0.0, CPU_COL, true),
+                        Col::Name => (String::new(), 0.0, CPU_COL, true),
+                    };
+                    let k = heat.clamp(0.0, 1.0);
                     if k > 0.02 {
-                        p.rect_filled(cell(i).shrink2(vec2(2.0, 0.0)), 5.0, col.gamma_multiply(0.08 + 0.32 * k));
+                        p.rect_filled(cell.shrink2(vec2(2.0, 0.0)), 5.0, hcol.gamma_multiply(0.08 + 0.32 * k));
                     }
-                };
-                heat(1, row.cpu / 30.0, CPU_COL);
-                heat(2, row.private_ws as f32 / total_mem * 6.0, MEM_COL);
-                heat(5, (row.io / (50.0 * 1048576.0)) as f32, IO_COL);
-
-                let texts: [String; 8] = [
-                    row.pid.map_or_else(|| row.count.to_string(), |p| p.to_string()),
-                    fmt::pct(row.cpu),
-                    fmt::bytes(row.private_ws),
-                    fmt::bytes(row.ws),
-                    fmt::bytes(row.commit),
-                    fmt::rate(row.io),
-                    fmt::thousands(row.threads as u64),
-                    fmt::thousands(row.handles as u64),
-                ];
-                for (i, t) in texts.iter().enumerate() {
-                    let col = if i == 0 || i >= 6 { txt_dim() } else { txt() };
-                    p.text(pos2(xs[i] - 10.0, cy), Align2::RIGHT_CENTER, t, reg(12.5), col);
+                    p.text(pos2(xs[i] - 10.0, cy), Align2::RIGHT_CENTER, text, reg(12.5), if dim { txt_dim() } else { txt() });
                 }
 
                 if resp.clicked() {

@@ -57,16 +57,18 @@ struct Group {
     count: u32,
     cpu: f32,
     mem: u64,
+    vram: u64,
 }
 
 /// Processes summed by image name ("chrome.exe ×24")
 fn grouped(s: &Snapshot) -> Vec<Group> {
     let mut m: HashMap<&str, Group> = HashMap::new();
     for p in &s.procs {
-        let g = m.entry(p.name.as_str()).or_insert_with(|| Group { name: p.name.clone(), count: 0, cpu: 0.0, mem: 0 });
+        let g = m.entry(p.name.as_str()).or_insert_with(|| Group { name: p.name.clone(), count: 0, cpu: 0.0, mem: 0, vram: 0 });
         g.count += 1;
         g.cpu += p.cpu;
         g.mem += p.private_ws;
+        g.vram += p.vram;
     }
     m.into_values().collect()
 }
@@ -141,17 +143,29 @@ pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
             go = Some(Page::Memory);
         }
 
-        // GPU (next)
+        // GPU (the main adapter)
         let (resp, r) = widgets::card_button(ui, rect(2), egui::Id::new("ov_gpu"));
         caption(&p, r.min.x + 18.0, r.min.y + 24.0, "GPU", GPU_COL);
-        big(&p, r.min.x + 18.0, r.min.y + 62.0, "—", "", 32.0);
-        p.text(pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, "VRAM per process is coming next", reg(12.0), txt_faint());
-        let gr = Rect::from_min_max(pos2(r.min.x + 18.0, r.min.y + 120.0), pos2(r.max.x - 18.0, r.max.y - 22.0));
-        for k in 0..4 {
-            let y = gr.min.y + gr.height() * k as f32 / 3.0;
-            p.line_segment([pos2(gr.min.x, y), pos2(gr.max.x, y)], Stroke::new(1.0_f32, wa(7)));
+        match main_gpu(s) {
+            Some(i) => {
+                let g = &s.gpus[i];
+                let v = glide(&ctx, egui::Id::new("ov_gpu_v"), g.util, 10.0);
+                let temp = g.sensors.temp.map(|t| format!("{t:.0}°C")).unwrap_or_default();
+                big(&p, r.min.x + 18.0, r.min.y + 62.0, &format!("{v:.0}%"), &temp, 32.0);
+                let sub = format!("{} / {} VRAM", fmt::bytes(g.dedicated_used), fmt::bytes(g.dedicated_total));
+                p.text(pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, sub, reg(12.0), txt_faint());
+                let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 112.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
+                let series = [
+                    Series { data: &s.h_gpu[i], col: GPU_COL, fill: true, width: 1.6 },
+                    Series { data: &s.h_vram[i], col: VRAM_COL, fill: false, width: 1.1 },
+                ];
+                graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hov(ui, gr), interval: s.interval, label: &pct_label });
+            }
+            None => {
+                big(&p, r.min.x + 18.0, r.min.y + 62.0, "—", "", 32.0);
+                p.text(pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, "No GPU counters found", reg(12.0), txt_faint());
+            }
         }
-        widgets::icon(&p, Icon::Gpu, gr.center(), txt_faint());
         if resp.clicked() {
             go = Some(Page::Gpu);
         }
@@ -331,6 +345,151 @@ pub fn memory(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let rows: Vec<(&Group, f32, String)> = by_mem.iter().take(10).map(|g| (*g, g.mem as f32, fmt::bytes(g.mem))).collect();
         let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len() as f32 * 30.0), Sense::hover());
         top_list(ui, r, "Biggest memory users (private working set, grouped by name)", MEM_COL, &rows);
+        ui.add_space(GAP);
+    });
+    None
+}
+
+/// The adapter people care about: the one with the most VRAM
+fn main_gpu(s: &Snapshot) -> Option<usize> {
+    (0..s.gpus.len()).max_by_key(|&i| s.gpus[i].dedicated_total)
+}
+
+fn engine_name(k: &str) -> String {
+    match k {
+        "VideoDecode" => "Video decode".into(),
+        "VideoEncode" => "Video encode".into(),
+        "LegacyOverlay" => "Overlay".into(),
+        _ => k.replace('_', " "),
+    }
+}
+
+/// Green when cool, orange when warm, red when hot
+pub fn temp_col(t: f32) -> Color32 {
+    if t < 60.0 {
+        GPU_COL
+    } else if t < 80.0 {
+        WARN_COL
+    } else {
+        DANGER
+    }
+}
+
+pub fn gpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
+    let Some(main) = main_gpu(s) else {
+        header(ui, "GPU", "No GPU performance counters were found on this system");
+        return None;
+    };
+    let ctx = ui.ctx().clone();
+    let sel_id = egui::Id::new("gpu_sel");
+    let mut sel = ctx.data(|d| d.get_temp::<usize>(sel_id)).unwrap_or(main).min(s.gpus.len() - 1);
+    ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        let w = ui.available_width();
+        let top = ui.cursor().min;
+        let g = &s.gpus[sel];
+        let vendor = g.vendor_name();
+        let sub = if vendor.is_empty() {
+            format!("{} dedicated memory", fmt::bytes(g.dedicated_total))
+        } else {
+            format!("{vendor}  ·  {} dedicated memory", fmt::bytes(g.dedicated_total))
+        };
+        header(ui, &g.name, &sub);
+        if s.gpus.len() > 1 {
+            // Adapter picker in the header's right corner
+            let names: Vec<String> = (0..s.gpus.len()).map(|i| format!("GPU {i}")).collect();
+            let refs: Vec<&str> = names.iter().map(|x| x.as_str()).collect();
+            let sw = 76.0 * refs.len() as f32;
+            let r = Rect::from_min_size(pos2(top.x + w - sw, top.y + 4.0), vec2(sw, 30.0));
+            if widgets::segmented(ui, r, &refs, &mut sel, sel_id.with("seg")) {
+                ctx.data_mut(|d| d.insert_temp(sel_id, sel));
+            }
+        }
+        let g = &s.gpus[sel];
+
+        let (r, _) = ui.allocate_exact_size(vec2(w, 280.0), Sense::hover());
+        let p = ui.painter().clone();
+        widgets::card(&p, r, card());
+        caption(&p, r.min.x + 18.0, r.min.y + 24.0, "Utilization", GPU_COL);
+        let x = caption(&p, r.max.x - 230.0, r.min.y + 24.0, "Usage", GPU_COL);
+        caption(&p, x + 14.0, r.min.y + 24.0, "Dedicated memory", VRAM_COL);
+        let v = glide(&ctx, egui::Id::new(("gpu_v", sel)), g.util, 10.0);
+        let busiest = g
+            .engines
+            .iter()
+            .max_by(|a, b| a.util.total_cmp(&b.util))
+            .filter(|e| e.util >= 0.5)
+            .map(|e| format!("busiest: {}", engine_name(&e.kind)))
+            .unwrap_or_default();
+        big(&p, r.min.x + 18.0, r.min.y + 60.0, &format!("{v:.1}%"), &busiest, 30.0);
+        let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 90.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
+        let series = [
+            Series { data: &s.h_gpu[sel], col: GPU_COL, fill: true, width: 1.8 },
+            Series { data: &s.h_vram[sel], col: VRAM_COL, fill: false, width: 1.2 },
+        ];
+        graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: true, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
+
+        // Engines
+        ui.add_space(GAP);
+        section(ui, "Engines");
+        let engines: Vec<&crate::sys::gpu::Engine> = g
+            .engines
+            .iter()
+            .filter(|e| matches!(e.kind.as_str(), "3D" | "Copy" | "VideoDecode" | "VideoEncode") || e.kind.starts_with("Compute") || e.util >= 0.5)
+            .collect();
+        let o = ui.cursor().min;
+        let (rects, h) = widgets::tile_grid(o, w, engines.len(), 170.0, 64.0, 12.0);
+        ui.allocate_exact_size(vec2(w, h), Sense::hover());
+        for (r, e) in rects.iter().zip(&engines) {
+            p.rect_filled(*r, 10.0, card());
+            p.rect_stroke(*r, 10.0, Stroke::new(1.0_f32, border()));
+            p.text(pos2(r.min.x + 14.0, r.min.y + 20.0), Align2::LEFT_CENTER, engine_name(&e.kind), reg(12.0), txt_faint());
+            p.text(pos2(r.max.x - 14.0, r.min.y + 20.0), Align2::RIGHT_CENTER, format!("{:.0}%", e.util), sb(13.0), mix(txt_dim(), hi(), e.util / 100.0));
+            let br = Rect::from_min_max(pos2(r.min.x + 14.0, r.max.y - 20.0), pos2(r.max.x - 14.0, r.max.y - 15.0));
+            let f = glide(&ctx, egui::Id::new(("eng", sel, e.kind.as_str())), e.util / 100.0, 10.0);
+            widgets::meter(&p, br, f, GPU_COL);
+        }
+
+        // Memory and sensors
+        ui.add_space(GAP);
+        section(ui, "Memory and sensors");
+        let n = &g.sensors;
+        let mut tiles: Vec<(&str, String, Option<Color32>)> = vec![
+            ("Dedicated memory", format!("{} / {}", fmt::bytes(g.dedicated_used), fmt::bytes(g.dedicated_total)), Some(VRAM_COL)),
+            ("Shared memory", format!("{} / {}", fmt::bytes(g.shared_used), fmt::bytes(g.shared_total)), None),
+        ];
+        if let Some(t) = n.temp {
+            tiles.push(("Temperature", format!("{t:.0} °C"), Some(temp_col(t))));
+        }
+        if let Some(c) = n.core_mhz {
+            tiles.push(("Core clock", format!("{c} MHz"), None));
+        }
+        if let Some(c) = n.mem_mhz {
+            tiles.push(("Memory clock", format!("{c} MHz"), None));
+        }
+        if let Some(pw) = n.power_w {
+            let lim = n.power_limit_w.map(|l| format!(" / {l:.0} W")).unwrap_or_default();
+            tiles.push(("Power", format!("{pw:.0} W{lim}"), None));
+        }
+        if let Some(f) = n.fan_pct {
+            tiles.push(("Fan", if f == 0 { "Stopped (0 %)".into() } else { format!("{f} %") }, None));
+        }
+        let o = ui.cursor().min;
+        let (rects, h) = widgets::tile_grid(o, w, tiles.len(), 170.0, 64.0, 12.0);
+        ui.allocate_exact_size(vec2(w, h), Sense::hover());
+        for (r, (c, v, d)) in rects.iter().zip(&tiles) {
+            widgets::tile(&p, *r, c, v, *d);
+        }
+        if n.temp.is_none() && g.vendor == 0x10de {
+            section(ui, "Temperature, clocks and power need the NVIDIA driver's NVML library");
+        }
+
+        ui.add_space(GAP);
+        let groups = grouped(s);
+        let mut by: Vec<&Group> = groups.iter().filter(|g| g.vram > 0).collect();
+        by.sort_by(|a, b| b.vram.cmp(&a.vram));
+        let rows: Vec<(&Group, f32, String)> = by.iter().take(10).map(|g| (*g, g.vram as f32, fmt::bytes(g.vram))).collect();
+        let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len() as f32 * 30.0), Sense::hover());
+        top_list(ui, r, "Biggest VRAM users (dedicated GPU memory, grouped by name)", VRAM_COL, &rows);
         ui.add_space(GAP);
     });
     None

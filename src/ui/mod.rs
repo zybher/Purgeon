@@ -33,7 +33,7 @@ const NAV: [(Page, Icon, &str, bool); 6] = [
     (Page::Processes, Icon::Processes, "Processes", true),
     (Page::Cpu, Icon::Cpu, "CPU", true),
     (Page::Memory, Icon::Memory, "Memory", true),
-    (Page::Gpu, Icon::Gpu, "GPU", false),
+    (Page::Gpu, Icon::Gpu, "GPU", true),
     (Page::Sensors, Icon::Sensors, "Sensors", false),
 ];
 
@@ -273,11 +273,7 @@ impl eframe::App for App {
                         }
                         Page::Cpu => pages::cpu(&mut cui, &s, scroll),
                         Page::Memory => pages::memory(&mut cui, &s, scroll),
-                        Page::Gpu => pages::soon(&mut cui, Icon::Gpu, "GPU", &[
-                            "Usage per engine (3D, copy, video encode and decode)",
-                            "Dedicated and shared VRAM, and which process uses how much",
-                            "Works on NVIDIA, AMD and Intel through Windows' GPU counters, with extra detail from NVML on NVIDIA",
-                        ]),
+                        Page::Gpu => pages::gpu(&mut cui, &s, scroll),
                         Page::Sensors => pages::soon(&mut cui, Icon::Sensors, "Sensors", &[
                             "GPU temperature, clocks, fan and power (NVML on NVIDIA)",
                             "CPU package and per-core temperatures",

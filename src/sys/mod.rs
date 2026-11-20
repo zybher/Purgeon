@@ -2,6 +2,7 @@
 //! of calls (one NtQuerySystemInformation for all processes) and publishes an immutable
 //! `Snapshot` the UI picks up.
 
+pub mod gpu;
 pub mod win;
 
 use std::collections::{HashMap, VecDeque};
@@ -30,6 +31,11 @@ pub struct Proc {
     pub threads: u32,
     pub handles: u32,
     pub session: u32,
+    /// Busiest GPU engine this process uses, 0..100
+    pub gpu: f32,
+    /// Dedicated GPU memory (VRAM) and shared GPU memory
+    pub vram: u64,
+    pub gpu_shared: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -89,6 +95,10 @@ pub struct Snapshot {
     pub h_mem: Vec<f32>,
     pub h_commit: Vec<f32>,
     pub h_cores: Vec<Vec<f32>>,
+    pub gpus: Vec<gpu::Gpu>,
+    /// Per GPU (same order as `gpus`): usage and dedicated memory use, both 0..100
+    pub h_gpu: Vec<Vec<f32>>,
+    pub h_vram: Vec<Vec<f32>>,
 }
 
 pub struct Shared {
@@ -151,6 +161,9 @@ struct Collector {
     h_mem: VecDeque<f32>,
     h_commit: VecDeque<f32>,
     h_cores: Vec<VecDeque<f32>>,
+    gpu: Option<gpu::GpuSampler>,
+    /// luid -> (usage, vram) history
+    h_gpu: HashMap<u64, (VecDeque<f32>, VecDeque<f32>)>,
 }
 
 impl Collector {
@@ -183,6 +196,8 @@ impl Collector {
             h_mem: VecDeque::with_capacity(HIST),
             h_commit: VecDeque::with_capacity(HIST),
             h_cores: vec![VecDeque::with_capacity(HIST); n],
+            gpu: gpu::GpuSampler::new(),
+            h_gpu: HashMap::new(),
         }
     }
 
@@ -241,7 +256,25 @@ impl Collector {
             lists: if self.info.admin { read_mem_lists(pg) } else { None },
         };
 
-        let procs = self.read_procs(dt);
+        let mut procs = self.read_procs(dt);
+        let (gpus, pg) = self.gpu.as_mut().map(|g| g.sample()).unwrap_or_default();
+        if !pg.is_empty() {
+            for p in procs.iter_mut() {
+                if let Some(g) = pg.get(&p.pid) {
+                    p.gpu = g.util;
+                    p.vram = g.dedicated;
+                    p.gpu_shared = g.shared;
+                }
+            }
+        }
+        let (mut h_gpu, mut h_vram) = (Vec::new(), Vec::new());
+        for g in &gpus {
+            let h = self.h_gpu.entry(g.luid).or_insert_with(|| (VecDeque::with_capacity(HIST), VecDeque::with_capacity(HIST)));
+            push(&mut h.0, g.util);
+            push(&mut h.1, if g.dedicated_total > 0 { g.dedicated_used as f32 / g.dedicated_total as f32 * 100.0 } else { 0.0 });
+            h_gpu.push(h.0.iter().copied().collect());
+            h_vram.push(h.1.iter().copied().collect());
+        }
 
         push(&mut self.h_cpu, cpu);
         push(&mut self.h_kernel, kernel);
@@ -274,6 +307,9 @@ impl Collector {
             h_mem: self.h_mem.iter().copied().collect(),
             h_commit: self.h_commit.iter().copied().collect(),
             h_cores: self.h_cores.iter().map(|h| h.iter().copied().collect()).collect(),
+            gpus,
+            h_gpu,
+            h_vram,
         }
     }
 
@@ -340,6 +376,7 @@ impl Collector {
                     threads: p.NumberOfThreads,
                     handles: p.HandleCount,
                     session: p.SessionId,
+                    ..Default::default()
                 });
             }
             if p.NextEntryOffset == 0 {

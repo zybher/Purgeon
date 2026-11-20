@@ -48,6 +48,7 @@ pub const KERNEL_COL: Color32 = Color32::from_rgb(0x93, 0xc5, 0xfd);
 pub const MEM_COL: Color32 = Color32::from_rgb(0x8b, 0x5c, 0xf6);
 pub const COMMIT_COL: Color32 = Color32::from_rgb(0xc4, 0xb5, 0xfd);
 pub const GPU_COL: Color32 = Color32::from_rgb(0x22, 0xc5, 0x5e);
+pub const VRAM_COL: Color32 = Color32::from_rgb(0x86, 0xef, 0xac);
 pub const IO_COL: Color32 = Color32::from_rgb(0x14, 0xb8, 0xa6);
 pub const WARN_COL: Color32 = Color32::from_rgb(0xf9, 0x73, 0x16);
 pub const DANGER: Color32 = Color32::from_rgb(232, 17, 35);
