@@ -6,6 +6,7 @@ pub mod clock;
 pub mod disk;
 pub mod etw;
 pub mod gpu;
+pub mod net;
 mod pdh;
 pub mod win;
 #[cfg(feature = "bench")]
@@ -49,6 +50,11 @@ pub struct Proc {
     pub disk_write: f64,
     /// Average time the disk took to serve this process's requests, milliseconds
     pub disk_resp: f32,
+    /// Network received / sent, bytes per second (administrator only)
+    pub net_rx: f64,
+    pub net_tx: f64,
+    /// Open connections (no administrator needed)
+    pub conns: net::Conns,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -123,6 +129,12 @@ pub struct Snapshot {
     /// Per-process GPU counters could be opened. When false, GPU and VRAM per process are
     /// unknown (shown as "—"), not zero.
     pub gpu_proc: bool,
+    /// Connected network adapters, busiest first
+    pub nets: Vec<net::Adapter>,
+    /// Per adapter (same order as `nets`): received and sent bytes/s
+    pub h_net: Vec<[Vec<f32>; 2]>,
+    /// Per-process network speed is live (running as administrator)
+    pub net_trace: bool,
 }
 
 pub struct Shared {
@@ -218,6 +230,9 @@ struct Collector {
     h_disk: HashMap<String, [VecDeque<f32>; 3]>,
     /// luid -> (usage, vram) history
     h_gpu: HashMap<u64, (VecDeque<f32>, VecDeque<f32>)>,
+    net: net::NetSampler,
+    /// luid -> (received, sent) history
+    h_net: HashMap<u64, [VecDeque<f32>; 2]>,
 }
 
 impl Collector {
@@ -261,6 +276,8 @@ impl Collector {
             disk: disk::DiskSampler::new(),
             h_disk: HashMap::new(),
             h_gpu: HashMap::new(),
+            net: net::NetSampler::default(),
+            h_net: HashMap::new(),
         }
     }
 
@@ -346,6 +363,32 @@ impl Collector {
                 }
             }
         }
+        if let Some(t) = &self.trace {
+            let per = t.take_net();
+            if dt > 0.0 {
+                for p in procs.iter_mut() {
+                    if let Some(&(rx, tx)) = per.get(&p.pid) {
+                        p.net_rx = rx as f64 / dt;
+                        p.net_tx = tx as f64 / dt;
+                    }
+                }
+            }
+        }
+        let conns = self.net.connections();
+        for p in procs.iter_mut() {
+            if let Some(c) = conns.get(&p.pid) {
+                p.conns = *c;
+            }
+        }
+        let nets = self.net.adapters(dt);
+        let mut h_net = Vec::with_capacity(nets.len());
+        for a in &nets {
+            let h = self.h_net.entry(a.luid).or_insert_with(|| std::array::from_fn(|_| VecDeque::with_capacity(HIST)));
+            push(&mut h[0], a.rx as f32);
+            push(&mut h[1], a.tx as f32);
+            h_net.push(std::array::from_fn(|i| h[i].iter().copied().collect()));
+        }
+        self.h_net.retain(|k, _| nets.iter().any(|a| a.luid == *k));
         let clocks = self.clock.as_mut().map(|c| c.sample()).unwrap_or_default();
         let disks = self.disk.as_mut().map(|d| d.sample()).unwrap_or_default();
         let mut h_disk = Vec::with_capacity(disks.len());
@@ -405,6 +448,9 @@ impl Collector {
             disk_trace: self.trace.is_some(),
             disk_orphan,
             gpu_proc: self.gpu.is_some(),
+            nets,
+            h_net,
+            net_trace: self.trace.is_some(),
         }
     }
 

@@ -36,6 +36,38 @@ pub fn rate(b: f64) -> String {
     }
 }
 
+/// Network speed in bits per second, the unit internet plans are sold in
+pub fn bits(bytes_per_sec: f64) -> String {
+    let b = bytes_per_sec * 8.0;
+    if b < 1.0 {
+        "0".into()
+    } else if b < 1e3 {
+        format!("{b:.0} bps")
+    } else if b < 1e6 {
+        format!("{:.0} Kbps", b / 1e3)
+    } else if b < 1e9 {
+        format!("{:.1} Mbps", b / 1e6)
+    } else {
+        format!("{:.2} Gbps", b / 1e9)
+    }
+}
+
+/// An adapter's link speed (already in bits per second): "1 Gbps", "866.7 Mbps"
+pub fn link(bps: u64) -> String {
+    let b = bps as f64;
+    let trim = |v: f64| {
+        let s = format!("{v:.1}");
+        s.strip_suffix(".0").map(str::to_string).unwrap_or(s)
+    };
+    if b >= 1e9 {
+        format!("{} Gbps", trim(b / 1e9))
+    } else if b >= 1e6 {
+        format!("{} Mbps", trim(b / 1e6))
+    } else {
+        format!("{} Kbps", trim(b / 1e3))
+    }
+}
+
 pub fn pct(v: f32) -> String {
     if v < 0.05 {
         "0".into()

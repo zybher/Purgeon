@@ -151,6 +151,7 @@ pub enum Icon {
     Cpu,
     Memory,
     Disk,
+    Network,
     Gpu,
     Sensors,
     Search,
@@ -194,6 +195,19 @@ pub fn icon(p: &Painter, kind: Icon, c: Pos2, col: Color32) {
             p.rect_stroke(Rect::from_center_size(c, vec2(15.0, 12.0)), 2.5, s);
             p.line_segment([c + vec2(-7.5, 2.0), c + vec2(7.5, 2.0)], s);
             p.circle_filled(c + vec2(4.5, 4.0), 1.1, col);
+        }
+        Icon::Network => {
+            // a globe: circle, equator and two meridians
+            p.circle_stroke(c, 7.0, s);
+            p.line_segment([c + vec2(-7.0, 0.0), c + vec2(7.0, 0.0)], s);
+            let mer: Vec<Pos2> = (0..=12)
+                .map(|i| {
+                    let a = std::f32::consts::PI * (i as f32 / 12.0 - 0.5);
+                    c + vec2(a.cos() * 3.2, a.sin() * 7.0)
+                })
+                .collect();
+            p.add(Shape::line(mer.iter().map(|q| pos2(2.0 * c.x - q.x, q.y)).collect(), s));
+            p.add(Shape::line(mer, s));
         }
         Icon::Gpu => {
             p.rect_stroke(Rect::from_center_size(c + vec2(1.0, 0.0), vec2(14.0, 10.0)), 2.0, s);

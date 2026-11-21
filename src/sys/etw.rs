@@ -4,6 +4,9 @@
 //! with its size and how long the disk took to serve it, tagged with the thread that issued it.
 //! Unlike the process I/O counters it leaves out network traffic and reads served from the cache.
 //!
+//! The same session also carries the kernel's TcpIp / UdpIp send and receive events, which
+//! give per-process network speed (also Resource Monitor's source). One session, two uses.
+//!
 //! It runs a private "system logger" session (Windows 8+), so it never takes over the shared
 //! "NT Kernel Logger" another tool may be using. The session is stopped when Purgeon exits.
 
@@ -23,6 +26,9 @@ struct Guid {
 
 /// Kernel DiskIo event class
 const DISK_IO: Guid = Guid { d1: 0x3d6f_a8d4, d2: 0xfe05, d3: 0x11d0, d4: [0x9d, 0xda, 0x00, 0xc0, 0x4f, 0xd7, 0xba, 0x7c] };
+/// Kernel TcpIp and UdpIp event classes
+const TCP_IP: Guid = Guid { d1: 0x9a28_0ac0, d2: 0xc8e0, d3: 0x11d1, d4: [0x84, 0xe2, 0x00, 0xc0, 0x4f, 0xb9, 0x98, 0xa2] };
+const UDP_IP: Guid = Guid { d1: 0xbf3a_50c5, d2: 0xa9c9, d3: 0x4988, d4: [0xa0, 0x05, 0x2d, 0xf0, 0xb7, 0xc8, 0x0f, 0x80] };
 /// Kernel trace control GUID (only for the shared NT Kernel Logger fallback)
 const SYSTEM_TRACE_CONTROL: Guid = Guid { d1: 0x9e81_4aad, d2: 0x3204, d3: 0x11d2, d4: [0x9a, 0x82, 0x00, 0x60, 0x08, 0xa8, 0x69, 0x39] };
 /// Our own session's GUID
@@ -35,6 +41,7 @@ const WNODE_FLAG_TRACED_GUID: u32 = 0x0002_0000;
 const EVENT_TRACE_REAL_TIME_MODE: u32 = 0x100;
 const EVENT_TRACE_SYSTEM_LOGGER_MODE: u32 = 0x0200_0000;
 const EVENT_TRACE_FLAG_DISK_IO: u32 = 0x100;
+const EVENT_TRACE_FLAG_NETWORK_TCPIP: u32 = 0x1_0000;
 const EVENT_TRACE_CONTROL_STOP: u32 = 1;
 const PROCESS_TRACE_MODE_REAL_TIME: u32 = 0x100;
 const PROCESS_TRACE_MODE_EVENT_RECORD: u32 = 0x1000_0000;
@@ -160,6 +167,8 @@ struct Acc {
     per: HashMap<u32, ProcDisk>,
     /// thread id -> process id (cleared on every take, thread ids get reused)
     tids: HashMap<u32, u32>,
+    /// pid -> (bytes received, bytes sent) over the network (loopback left out)
+    net: HashMap<u32, (u64, u64)>,
 }
 
 fn acc() -> &'static Mutex<Acc> {
@@ -185,7 +194,7 @@ fn props(guid: Guid, mode: u32) -> Props {
         max_file_size: 0,
         log_file_mode: mode,
         flush_timer: 1,
-        enable_flags: EVENT_TRACE_FLAG_DISK_IO,
+        enable_flags: EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_NETWORK_TCPIP,
         age_limit: 0,
         number_of_buffers: 0,
         free_buffers: 0,
@@ -215,8 +224,47 @@ fn start_session(name: &str, guid: Guid, mode: u32) -> u32 {
     r
 }
 
+/// TcpIp / UdpIp send and receive: 10 send, 11 receive (IPv4), 26 / 27 the same over IPv6
+unsafe fn on_net(r: &EventRecord) {
+    let (recv, v6) = match r.opcode {
+        10 => (false, false),
+        11 => (true, false),
+        26 => (false, true),
+        27 => (true, true),
+        _ => return,
+    };
+    let len = r.user_data_len as usize;
+    // TcpIp/UdpIp_TypeGroup1: PID, size, daddr, saddr, ... (addresses 4 or 16 bytes)
+    if r.user_data.is_null() || len < if v6 { 40 } else { 16 } {
+        return;
+    }
+    let d = r.user_data;
+    let pid = std::ptr::read_unaligned(d as *const u32);
+    let size = std::ptr::read_unaligned(d.add(4) as *const u32) as u64;
+    // Traffic that never leaves the machine (127.x.x.x, ::1) is not network use
+    let loopback = if v6 {
+        let a = std::ptr::read_unaligned(d.add(8) as *const [u8; 16]);
+        a == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+    } else {
+        *d.add(8) == 127
+    };
+    if loopback {
+        return;
+    }
+    let Ok(mut a) = acc().lock() else { return };
+    let e = a.net.entry(pid).or_default();
+    if recv {
+        e.0 += size;
+    } else {
+        e.1 += size;
+    }
+}
+
 unsafe extern "system" fn on_event(r: *const EventRecord) {
     let r = &*r;
+    if r.provider == TCP_IP || r.provider == UDP_IP {
+        return on_net(r);
+    }
     if r.provider != DISK_IO {
         return;
     }
@@ -317,6 +365,12 @@ impl DiskTrace {
         let Ok(mut a) = acc().lock() else { return HashMap::new() };
         a.tids.clear();
         std::mem::take(&mut a.per)
+    }
+
+    /// Network bytes (received, sent) per process id since the previous call
+    pub fn take_net(&self) -> HashMap<u32, (u64, u64)> {
+        let Ok(mut a) = acc().lock() else { return HashMap::new() };
+        std::mem::take(&mut a.net)
     }
 }
 

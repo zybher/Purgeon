@@ -65,13 +65,28 @@ struct Group {
     vram: u64,
     disk_r: f64,
     disk_w: f64,
+    net_rx: f64,
+    net_tx: f64,
+    conns: crate::sys::net::Conns,
 }
 
 /// Processes summed by image name ("chrome.exe ×24")
 fn grouped(s: &Snapshot) -> Vec<Group> {
     let mut m: HashMap<&str, Group> = HashMap::new();
     for p in &s.procs {
-        let g = m.entry(p.name.as_str()).or_insert_with(|| Group { name: p.name.clone(), path: None, count: 0, cpu: 0.0, mem: 0, vram: 0, disk_r: 0.0, disk_w: 0.0 });
+        let g = m.entry(p.name.as_str()).or_insert_with(|| Group {
+            name: p.name.clone(),
+            path: None,
+            count: 0,
+            cpu: 0.0,
+            mem: 0,
+            vram: 0,
+            disk_r: 0.0,
+            disk_w: 0.0,
+            net_rx: 0.0,
+            net_tx: 0.0,
+            conns: Default::default(),
+        });
         g.count += 1;
         if g.path.is_none() {
             g.path = p.path.clone();
@@ -81,6 +96,11 @@ fn grouped(s: &Snapshot) -> Vec<Group> {
         g.vram += p.vram;
         g.disk_r += p.disk_read;
         g.disk_w += p.disk_write;
+        g.net_rx += p.net_rx;
+        g.net_tx += p.net_tx;
+        g.conns.tcp += p.conns.tcp;
+        g.conns.listen += p.conns.listen;
+        g.conns.udp += p.conns.udp;
     }
     m.into_values().collect()
 }
@@ -595,6 +615,152 @@ pub fn disk(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                 r.width() - 36.0,
                 txt_faint(),
             );
+        }
+        ui.add_space(GAP);
+    });
+    None
+}
+
+fn net_label(v: &[f32]) -> String {
+    match v {
+        [d, u, ..] => format!("↓ {}  ·  ↑ {}", fmt::bits(*d as f64), fmt::bits(*u as f64)),
+        [a] => fmt::bits(*a as f64),
+        _ => String::new(),
+    }
+}
+
+pub fn network(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
+    ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        let w = ui.available_width();
+        let ctx = ui.ctx().clone();
+        let down: f64 = s.nets.iter().map(|a| a.rx).sum();
+        let up: f64 = s.nets.iter().map(|a| a.tx).sum();
+        let n = s.nets.len();
+        header(
+            ui,
+            "Network",
+            &format!("{n} connected adapter{}  ·  down {}  ·  up {}", if n == 1 { "" } else { "s" }, fmt::bits(down), fmt::bits(up)),
+        );
+        let p = ui.painter().clone();
+        if s.nets.is_empty() {
+            let (r, _) = ui.allocate_exact_size(vec2(w, 74.0), Sense::hover());
+            widgets::card(&p, r, card());
+            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, "No connected network adapters", NET_COL, r.width() - 36.0);
+            widgets::fit(
+                &p,
+                pos2(r.min.x + 18.0, r.min.y + 50.0),
+                Align2::LEFT_CENTER,
+                "Plug in a cable or join a Wi-Fi network and it shows up here.",
+                reg(12.0),
+                r.width() - 36.0,
+                txt_faint(),
+            );
+            ui.add_space(GAP);
+        }
+        for (i, a) in s.nets.iter().enumerate() {
+            let h = &s.h_net[i];
+            let (r, _) = ui.allocate_exact_size(vec2(w, 290.0), Sense::hover());
+            widgets::card(&p, r, card());
+            let title = if a.desc.is_empty() || a.desc == a.name { a.name.clone() } else { format!("{}  ·  {}", a.name, a.desc) };
+            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, &title, NET_COL, r.width() - 36.0);
+            let v = glide(&ctx, egui::Id::new(("net_v", a.luid)), a.rx as f32, 10.0);
+            big(&p, r.min.x + 18.0, r.min.y + 60.0, &fmt::bits(v as f64), &format!("down  ·  {} up", fmt::bits(a.tx)), 30.0);
+
+            // Download and upload on one graph, scaled to the recent peak (at least 1 Mbps)
+            let pr = Rect::from_min_size(pos2(r.min.x + 18.0, r.min.y + 92.0), vec2(r.width() - 36.0, r.height() - 92.0 - 16.0));
+            p.rect_filled(pr, 8.0, well());
+            p.rect_stroke(pr, 8.0, Stroke::new(1.0_f32, border()));
+            let lx = caption(&p, pr.min.x + 8.0, pr.min.y + 16.0, "Download", NET_COL);
+            caption(&p, lx + 10.0, pr.min.y + 16.0, "Upload", NET_UP_COL);
+            let g = Rect::from_min_max(pos2(pr.min.x + 1.0, pr.min.y + 30.0), pos2(pr.max.x - 1.0, pr.max.y - 6.0));
+            let peak = h[0].iter().chain(h[1].iter()).fold(125_000.0_f32, |m, b| m.max(*b)) * 1.15;
+            let peak = glide(&ctx, egui::Id::new(("net_peak", a.luid)), peak, 4.0);
+            let series = [
+                Series { data: &h[0], col: NET_COL, fill: true, width: 1.5 },
+                Series { data: &h[1], col: NET_UP_COL, fill: false, width: 1.3 },
+            ];
+            graph::paint(&p, g, &Graph { series: &series, max: peak, scroll, grid: true, hover: hover_in(ui, g), interval: s.interval, label: &net_label });
+            p.text(pos2(pr.max.x - 12.0, pr.min.y + 16.0), Align2::RIGHT_CENTER, fmt::bits(peak as f64), reg(10.5), txt_faint());
+
+            ui.add_space(12.0);
+            let link = if a.link_rx == a.link_tx || a.link_tx == 0 {
+                fmt::link(a.link_rx)
+            } else {
+                format!("{} ↓  ·  {} ↑", fmt::link(a.link_rx), fmt::link(a.link_tx))
+            };
+            let tiles: [(&str, String, Option<Color32>); 6] = [
+                ("Download", fmt::bits(a.rx), Some(NET_COL)),
+                ("Upload", fmt::bits(a.tx), Some(NET_UP_COL)),
+                ("Received since start", fmt::bytes(a.rx_total), None),
+                ("Sent since start", fmt::bytes(a.tx_total), None),
+                ("Link speed", link, None),
+                ("Type", a.kind.to_string(), None),
+            ];
+            let o = ui.cursor().min;
+            let (rects, th) = widgets::tile_grid(o, w, tiles.len(), 170.0, 64.0, 12.0);
+            ui.allocate_exact_size(vec2(w, th), Sense::hover());
+            for (tr, (c, v, dcol)) in rects.iter().zip(&tiles) {
+                widgets::tile(&p, *tr, c, v, *dcol);
+            }
+            ui.add_space(GAP + 8.0);
+        }
+
+        let groups = grouped(s);
+        // Which programs are using the network (kernel trace, administrator only)
+        if s.net_trace {
+            let mut by: Vec<&Group> = groups.iter().filter(|g| g.net_rx + g.net_tx > 0.0).collect();
+            by.sort_by(|a, b| (b.net_rx + b.net_tx).total_cmp(&(a.net_rx + a.net_tx)));
+            let rows: Vec<(&Group, f32, String)> = by
+                .iter()
+                .take(10)
+                .map(|g| (*g, (g.net_rx + g.net_tx) as f32, format!("↓ {}  ·  ↑ {}", fmt::bits(g.net_rx), fmt::bits(g.net_tx))))
+                .collect();
+            let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
+            top_list_w(ui, r, "Programs using the network", NET_COL, &rows, 190.0);
+            if rows.is_empty() {
+                p.text(pos2(r.min.x + 18.0, r.min.y + 60.0), Align2::LEFT_CENTER, "No network traffic in the last update", reg(12.5), txt_faint());
+            }
+        } else {
+            let (r, _) = ui.allocate_exact_size(vec2(w, 74.0), Sense::hover());
+            widgets::card(&p, r, card());
+            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, "Which programs are using the network", NET_COL, r.width() - 36.0);
+            widgets::fit(
+                &p,
+                pos2(r.min.x + 18.0, r.min.y + 50.0),
+                Align2::LEFT_CENTER,
+                "Click Elevate (bottom left) to see download and upload speed per program.",
+                reg(12.0),
+                r.width() - 36.0,
+                txt_faint(),
+            );
+        }
+        ui.add_space(GAP);
+
+        // Open connections: available without administrator
+        let mut by: Vec<&Group> = groups.iter().filter(|g| g.conns.total() > 0).collect();
+        by.sort_by(|a, b| b.conns.tcp.cmp(&a.conns.tcp).then(b.conns.total().cmp(&a.conns.total())));
+        let rows: Vec<(&Group, f32, String)> = by
+            .iter()
+            .take(10)
+            .map(|g| {
+                let c = g.conns;
+                let mut t = format!("{} connected", c.tcp);
+                if c.listen > 0 {
+                    t += &format!("  ·  {} listening", c.listen);
+                }
+                if c.udp > 0 {
+                    t += &format!("  ·  {} UDP", c.udp);
+                }
+                (*g, c.total() as f32, t)
+            })
+            .collect();
+        let (r, resp) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
+        top_list_w(ui, r, "Open connections", NET_UP_COL, &rows, 250.0);
+        resp.on_hover_text(
+            "Connected: TCP connections to another computer or server. Listening: ports the program waits on for others to connect. UDP: sockets used by games, voice chat and DNS, which have no connection state.",
+        );
+        if rows.is_empty() {
+            p.text(pos2(r.min.x + 18.0, r.min.y + 60.0), Align2::LEFT_CENTER, "No open connections", reg(12.5), txt_faint());
         }
         ui.add_space(GAP);
     });

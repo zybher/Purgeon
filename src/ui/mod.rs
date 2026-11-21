@@ -27,16 +27,18 @@ pub enum Page {
     Cpu,
     Memory,
     Disk,
+    Network,
     Gpu,
     Sensors,
 }
 
-const NAV: [(Page, Icon, &str, bool); 7] = [
+const NAV: [(Page, Icon, &str, bool); 8] = [
     (Page::Overview, Icon::Overview, "Overview", true),
     (Page::Processes, Icon::Processes, "Processes", true),
     (Page::Cpu, Icon::Cpu, "CPU", true),
     (Page::Memory, Icon::Memory, "Memory", true),
     (Page::Disk, Icon::Disk, "Disk", true),
+    (Page::Network, Icon::Network, "Network", true),
     (Page::Gpu, Icon::Gpu, "GPU", true),
     (Page::Sensors, Icon::Sensors, "Sensors", false),
 ];
@@ -330,6 +332,7 @@ impl eframe::App for App {
                         Page::Cpu => pages::cpu(&mut cui, &s, scroll),
                         Page::Memory => pages::memory(&mut cui, &s, scroll),
                         Page::Disk => pages::disk(&mut cui, &s, scroll),
+                        Page::Network => pages::network(&mut cui, &s, scroll),
                         Page::Gpu => pages::gpu(&mut cui, &s, scroll),
                         Page::Sensors => pages::soon(&mut cui, Icon::Sensors, "Sensors", &[
                             "GPU temperature, clocks, fan and power (NVML on NVIDIA)",
@@ -494,6 +497,7 @@ fn page_name(p: Page) -> &'static str {
         Page::Cpu => "cpu",
         Page::Memory => "memory",
         Page::Disk => "disk",
+        Page::Network => "network",
         Page::Gpu => "gpu",
         Page::Sensors => "sensors",
     }
@@ -507,6 +511,7 @@ fn start_page() -> Page {
         Some("cpu") => Page::Cpu,
         Some("memory") => Page::Memory,
         Some("disk") => Page::Disk,
+        Some("network") => Page::Network,
         Some("gpu") => Page::Gpu,
         Some("sensors") => Page::Sensors,
         _ => Page::Overview,

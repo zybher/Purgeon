@@ -51,6 +51,9 @@ pub const GPU_COL: Color32 = Color32::from_rgb(0x22, 0xc5, 0x5e);
 pub const VRAM_COL: Color32 = Color32::from_rgb(0x86, 0xef, 0xac);
 pub const DISK_COL: Color32 = Color32::from_rgb(0x2d, 0xd4, 0xbf);
 pub const IO_COL: Color32 = Color32::from_rgb(0x14, 0xb8, 0xa6);
+/// Network download, and upload (lighter)
+pub const NET_COL: Color32 = Color32::from_rgb(0xec, 0x48, 0x99);
+pub const NET_UP_COL: Color32 = Color32::from_rgb(0xf9, 0xa8, 0xd4);
 pub const WARN_COL: Color32 = Color32::from_rgb(0xf9, 0x73, 0x16);
 pub const DANGER: Color32 = Color32::from_rgb(232, 17, 35);
 
