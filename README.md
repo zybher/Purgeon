@@ -24,7 +24,27 @@ not beat them.** What it adds is detail in one place, not better numbers.
 | Per-process disk | Includes cached and network I/O | Same as Task Manager; as administrator, physical disk I/O only, from a kernel trace | Standard user: 256 of 256 MB, same as Task Manager. Administrator mode not tested yet |
 | Per-process network | Not shown (Resource Monitor only) | As administrator: download and upload per program from the same kernel trace; open connections per program without admin | Not tested yet |
 | Disk response time and queue | Per drive, across Task Manager and Resource Monitor | Per drive, all in one view | Same counters, no separate test |
-| Own cost | Not measured here | About 33 MB of RAM with the window open (23 MB of it only Purgeon's), about 27 MB minimized; the sampler uses 0.07% CPU and 13 ms per update | Measured |
+| Own cost | Not measured here | About 33 MB of RAM with the window open (23 MB of it only Purgeon's), about 27 MB minimized, about 10 MB in the tray; the sampler uses 0.07% CPU and 13 ms per update | Measured |
+
+## Tray and alerts
+
+Closing the window doesn't quit Purgeon. It moves to the tray (the icons next to the clock) and
+keeps an eye on your PC there, using about 10 MB of RAM and almost no CPU. Click its icon to
+open it again. Right-click the icon to quit, or to turn the warnings off. Starting Purgeon again
+while it's in the tray just opens the copy that's already running.
+
+From the tray it shows a Windows notification only when something is wrong:
+
+| Warning | When |
+|---|---|
+| Your PC is running out of memory | 92% or more of RAM in use for 20 seconds |
+| An app is using a lot of memory | One app holds 30% of RAM (and at least 3 GB) for a minute |
+| Your graphics card is running hot | The GPU is at 85°C or more for 30 seconds |
+
+Each warning shows once, and only again after the problem has gone away and some time has passed
+(20 minutes for memory, an hour per app, 30 minutes for the GPU). There's never more than one
+warning every two minutes. Focus Assist / Do Not Disturb holds them back like any other
+notification. The on/off choice is saved in `%APPDATA%\Purgeon\settings.ini`.
 
 ## Keyboard
 

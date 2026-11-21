@@ -55,6 +55,8 @@ pub struct App {
     trimmed: bool,
     was_focused: bool,
     was_minimized: bool,
+    /// Closed to the tray; the window hides on the next frame
+    hide_next: bool,
     /// The UAC prompt was declined: show a dismissible note
     uac_note: bool,
     /// Snapshots seen, to evict dead programs' icons now and then
@@ -66,8 +68,22 @@ impl App {
         let reduced = crate::platform::reduce_motion();
         crate::anim::set_reduced(reduced);
         setup_style(&cc.egui_ctx, reduced);
+        // Alerts and the tray's hover text follow every sample, also while hidden in the tray
+        let mut watch = crate::alerts::Watch::default();
+        let mut tip = String::new();
+        let shared = sys::start(cc.egui_ctx.clone(), move |s| {
+            if let Some(a) = watch.check(s) {
+                crate::tray::notify(&a.title, &a.body, true);
+            }
+            let t = format!("{} · CPU {:.0}% · RAM {:.0}%", crate::TITLE, s.cpu, s.mem.used_frac() * 100.0);
+            if t != tip {
+                crate::tray::set_tip(&t);
+                tip = t;
+            }
+        });
+        crate::tray::start(shared.clone(), cc.egui_ctx.clone());
         App {
-            shared: sys::start(cc.egui_ctx.clone()),
+            shared,
             snap: None,
             page: start_page(),
             page_at: Instant::now(),
@@ -78,6 +94,7 @@ impl App {
             trimmed: false,
             was_focused: true,
             was_minimized: false,
+            hide_next: false,
             uac_note: false,
             snaps: 0,
         }
@@ -154,6 +171,7 @@ impl App {
                     p.line_segment([c + vec2(-4.5, -4.5), c + vec2(4.5, 4.5)], ic);
                     p.line_segment([c + vec2(4.5, -4.5), c + vec2(-4.5, 4.5)], ic);
                     if resp.clicked() {
+                        // to the tray when there is one (see `update`), else quits
                         ctx.send_viewport_cmd(ViewportCommand::Close);
                     }
                 }
@@ -243,8 +261,7 @@ impl App {
                 let mut state = vec![format!("--page={}", page_name(self.page))];
                 state.extend(self.table.state_args());
                 if crate::platform::relaunch_as_admin(&state) {
-                    crate::sys::etw::stop();
-                    std::process::exit(0);
+                    crate::quit();
                 }
                 self.uac_note = true;
             }
@@ -271,8 +288,36 @@ impl eframe::App for App {
             }
             self.snap = Some(s);
         }
-        // Minimized: the sampler keeps going but stops waking the UI
-        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        if self.shared.hidden.load(Ordering::Relaxed) {
+            // In the tray: draw nothing and ask for nothing, until the tray shows the window
+            return;
+        }
+        // Closing (the X, Alt+F4, the taskbar) hides Purgeon to the tray; it keeps watching
+        // without drawing. The tray icon's Quit ends it.
+        if ctx.input(|i| i.viewport().close_requested()) && crate::tray::active() {
+            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+            // Put away on the next frame, once the close is cancelled
+            self.hide_next = true;
+            ctx.request_repaint();
+            return;
+        }
+        if self.hide_next {
+            self.hide_next = false;
+            crate::platform::hide_window();
+            self.shared.hidden.store(true, Ordering::Relaxed);
+            self.shared.visible.store(false, Ordering::Relaxed);
+            self.was_minimized = true;
+            crate::platform::trim_memory();
+            if !crate::settings::flag("tray_note", false) {
+                crate::settings::set_flag("tray_note", true);
+                crate::tray::notify("Purgeon is still running", "It's keeping an eye on your PC from the tray and will tell you if something's wrong. Right-click its icon to quit.", false);
+            }
+            // Draw nothing this frame, so nothing asks for another one
+            return;
+        }
+        let hidden = self.shared.hidden.load(Ordering::Relaxed);
+        // Minimized or in the tray: the sampler keeps going but stops waking the UI
+        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false)) || hidden;
         self.shared.visible.store(!minimized, Ordering::Relaxed);
         // Give back memory only needed while starting (the GPU sensor library alone takes ~19 MB
         // to start), and again whenever the window loses focus or is minimized. The startup trim
@@ -351,7 +396,7 @@ impl eframe::App for App {
             }
         });
         resize_edges(ctx);
-        if let Some(sh) = &mut self.shot {
+        if let Some(sh) = self.shot.as_mut().filter(|_| !hidden) {
             sh.tick(ctx);
         }
     }

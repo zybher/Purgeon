@@ -1,12 +1,126 @@
 //! Window styling through DWM, and the app icon (drawn in code, no asset files).
 
 use crate::sys::win;
+use std::sync::atomic::{AtomicIsize, Ordering};
+
+#[link(name = "user32")]
+extern "system" {
+    fn EnumWindows(f: unsafe extern "system" fn(isize, isize) -> i32, l: isize) -> i32;
+    fn GetWindowThreadProcessId(h: isize, pid: *mut u32) -> u32;
+    fn GetWindowTextW(h: isize, buf: *mut u16, n: i32) -> i32;
+    fn IsWindow(h: isize) -> i32;
+}
+
+static MAIN: AtomicIsize = AtomicIsize::new(0);
+
+/// Purgeon's own main window: titled "Purgeon" and owned by this process (a File Explorer
+/// window open on a folder called Purgeon has the same title). 0 until it exists.
+pub fn main_window() -> isize {
+    let h = MAIN.load(Ordering::Relaxed);
+    if h != 0 && unsafe { IsWindow(h) } != 0 {
+        return h;
+    }
+    unsafe extern "system" fn each(h: isize, _: isize) -> i32 {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(h, &mut pid);
+        if pid != std::process::id() {
+            return 1;
+        }
+        let mut buf = [0u16; 32];
+        let n = GetWindowTextW(h, buf.as_mut_ptr(), buf.len() as i32).max(0) as usize;
+        if String::from_utf16_lossy(&buf[..n]) == crate::TITLE {
+            MAIN.store(h, Ordering::Relaxed);
+            return 0;
+        }
+        1
+    }
+    MAIN.store(0, Ordering::Relaxed);
+    unsafe { EnumWindows(each, 0) };
+    MAIN.load(Ordering::Relaxed)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Placement {
+    length: u32,
+    flags: u32,
+    show: u32,
+    min: [i32; 2],
+    max: [i32; 2],
+    normal: [i32; 4],
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn ShowWindow(h: isize, cmd: i32) -> i32;
+    fn SetForegroundWindow(h: isize) -> i32;
+    fn GetWindowPlacement(h: isize, p: *mut Placement) -> i32;
+    fn SetWindowPlacement(h: isize, p: *const Placement) -> i32;
+    fn GetWindowLongPtrW(h: isize, i: i32) -> isize;
+    fn SetWindowLongPtrW(h: isize, i: i32, v: isize) -> isize;
+}
+
+/// Where the window was and its extended style, while it sits in the tray
+static PARKED: std::sync::Mutex<Option<(Placement, isize)>> = std::sync::Mutex::new(None);
+const GWL_EXSTYLE: i32 = -20;
+const WS_EX_TOOLWINDOW: isize = 0x80;
+const WS_EX_APPWINDOW: isize = 0x40000;
+
+/// Puts the main window away (to the tray): gone from the screen, the taskbar and Alt+Tab.
+///
+/// It is parked far off-screen as a tool window rather than hidden: eframe asks Windows to
+/// redraw a window it believes is showing, a hidden window never gets that redraw, and eframe
+/// then busy-waits for it on a full CPU core. Parked, any redraw just happens, unseen.
+pub fn hide_window() {
+    let h = main_window();
+    let mut park = PARKED.lock().unwrap_or_else(|e| e.into_inner());
+    if h == 0 || park.is_some() {
+        return;
+    }
+    unsafe {
+        let mut p = Placement { length: std::mem::size_of::<Placement>() as u32, ..Default::default() };
+        if GetWindowPlacement(h, &mut p) == 0 {
+            return;
+        }
+        let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+        *park = Some((p, ex));
+        // hidden while the style changes, so the taskbar drops the button
+        ShowWindow(h, 0);
+        SetWindowLongPtrW(h, GWL_EXSTYLE, (ex | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW);
+        let [l, t, r, b] = p.normal;
+        let off = Placement { show: 4, normal: [-32000, -32000, -32000 + (r - l), -32000 + (b - t)], flags: 0, ..p };
+        // SW_SHOWNOACTIVATE: shown (to Windows) at the off-screen spot, without taking focus
+        SetWindowPlacement(h, &off);
+    }
+}
+
+/// Brings the main window back from the tray to where it was, in front
+pub fn show_window() {
+    let h = main_window();
+    if h == 0 {
+        return;
+    }
+    let parked = PARKED.lock().unwrap_or_else(|e| e.into_inner()).take();
+    unsafe {
+        if let Some((mut p, ex)) = parked {
+            ShowWindow(h, 0);
+            SetWindowLongPtrW(h, GWL_EXSTYLE, ex);
+            // back maximized if it was, otherwise normal (also when it was minimized)
+            p.show = if p.show == 3 { 3 } else { 1 };
+            SetWindowPlacement(h, &p);
+        } else {
+            // SW_RESTORE: e.g. minimized and Purgeon was started again
+            ShowWindow(h, 9);
+        }
+        // allowed here: the user just clicked our icon (or started Purgeon again)
+        SetForegroundWindow(h);
+    }
+}
 
 /// Rounds the borderless window's corners (Windows 11), gives it a dark border and dark
 /// system chrome. Returns false until the window exists.
 pub fn style_window() -> bool {
-    let title: Vec<u16> = crate::TITLE.encode_utf16().chain(Some(0)).collect();
-    let h = unsafe { win::FindWindowW(std::ptr::null(), title.as_ptr()) };
+    let h = main_window();
     if h == 0 {
         return false;
     }
@@ -55,6 +169,8 @@ pub fn relaunch_as_admin(state: &[String]) -> bool {
         .skip(1)
         .filter(|a| !keys.contains(&key(a)))
         .chain(state.iter().cloned())
+        .filter(|a| a != "--relaunched")
+        .chain(Some("--relaunched".to_string()))
         .map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a })
         .collect();
     let (op, file, params) = (win::wide("runas"), win::wide(&exe.to_string_lossy()), win::wide(&args.join(" ")));

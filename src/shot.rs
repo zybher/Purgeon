@@ -16,7 +16,7 @@ impl Shot {
     }
 
     pub fn tick(&mut self, ctx: &egui::Context) {
-        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        // no repaint request: new samples wake the UI every second, which is enough to time the shot
         if !self.asked && self.start.elapsed().as_secs_f32() > delay() {
             self.asked = true;
             ctx.send_viewport_cmd(ViewportCommand::Screenshot);
@@ -29,7 +29,7 @@ impl Shot {
         });
         if let Some(img) = img {
             let _ = std::fs::write(&self.path, png(&img));
-            ctx.send_viewport_cmd(ViewportCommand::Close);
+            crate::quit();
         }
     }
 }

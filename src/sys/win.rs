@@ -181,7 +181,6 @@ extern "system" {
 
 #[link(name = "user32")]
 extern "system" {
-    pub fn FindWindowW(class: *const u16, title: *const u16) -> isize;
     pub fn SystemParametersInfoW(action: u32, uparam: u32, pv: *mut c_void, winini: u32) -> i32;
 }
 

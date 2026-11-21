@@ -159,6 +159,8 @@ pub struct Shared {
     /// False while the window is minimized: samples keep coming (graphs stay continuous)
     /// but the UI is not woken up to draw them
     pub visible: AtomicBool,
+    /// The window was closed to the tray
+    pub hidden: AtomicBool,
 }
 impl Shared {
     /// The newest snapshot, if one arrived since the last call
@@ -167,8 +169,15 @@ impl Shared {
     }
 }
 
-pub fn start(ctx: eframe::egui::Context) -> Arc<Shared> {
-    let shared = Arc::new(Shared { latest: Mutex::new(None), interval_ms: AtomicU32::new(1000), visible: AtomicBool::new(true) });
+/// Starts sampling on a background thread. `on_sample` sees every snapshot as it is made, even
+/// while the window is hidden (alerts and the tray tooltip use it).
+pub fn start(ctx: eframe::egui::Context, mut on_sample: impl FnMut(&Snapshot) + Send + 'static) -> Arc<Shared> {
+    let shared = Arc::new(Shared {
+        latest: Mutex::new(None),
+        interval_ms: AtomicU32::new(1000),
+        visible: AtomicBool::new(true),
+        hidden: AtomicBool::new(false),
+    });
     let s = shared.clone();
     std::thread::Builder::new()
         .name("purgeon-sampler".into())
@@ -196,6 +205,7 @@ pub fn start(ctx: eframe::egui::Context) -> Arc<Shared> {
                     continue;
                 }
                 let snap = c.sample(iv.as_secs_f32());
+                on_sample(&snap);
                 if let Ok(mut l) = s.latest.lock() {
                     *l = Some(Arc::new(snap));
                 }

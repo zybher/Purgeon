@@ -1,17 +1,28 @@
 //! Purgeon: a detailed Windows system monitor.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod alerts;
 mod anim;
 mod fmt;
 mod platform;
+mod settings;
 mod shot;
 mod sys;
 mod theme;
+mod tray;
 mod ui;
 
 use eframe::egui;
 
 pub const TITLE: &str = "Purgeon";
+
+/// Exits Purgeon for good: from the tray menu, after relaunching elevated, or after a screenshot
+pub fn quit() -> ! {
+    tray::remove();
+    // kernel trace sessions outlive the process unless stopped
+    sys::etw::stop();
+    std::process::exit(0)
+}
 
 fn main() -> eframe::Result<()> {
     #[cfg(feature = "bench")]
@@ -35,6 +46,11 @@ fn main() -> eframe::Result<()> {
         sys::bench::load(&std::env::args().skip(i + 1).collect::<Vec<_>>());
         return Ok(());
     }
+    // Purgeon already running (perhaps hidden in the tray): bring that one back instead
+    if std::env::var_os("PURGEON_SHOT").is_none() && !tray::first_instance() {
+        return Ok(());
+    }
+    alerts::load();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
         .with_inner_size([1180.0, 760.0])
