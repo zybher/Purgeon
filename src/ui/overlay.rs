@@ -19,7 +19,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 const TITLE: &str = "Purgeon overlay";
-const W: f32 = 760.0;
+const W: f32 = 860.0;
 const H: f32 = 64.0;
 /// Gap between the top of the screen and the bar, in points
 const TOP: f32 = 10.0;
@@ -248,24 +248,34 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
     let used = s.mem.used_frac();
     let temp = s.gpus.iter().filter_map(|g| g.sensors.temp).fold(None, |a: Option<f32>, t| Some(a.map_or(t, |a| a.max(t))));
     let down: f64 = s.nets.iter().map(|n| n.rx).sum();
-    let sys: [(&str, String, u8); 4] = [
+    let gpu_load = s.gpus.iter().map(|g| g.util).fold(None, |a: Option<f32>, u| Some(a.map_or(u, |a| a.max(u))));
+    // Two rows with the same columns: how busy each part is, and how hot it is. The CPU's
+    // temperature needs a driver Purgeon doesn't load, so it stays a dash.
+    let load: [(&str, String, u8); 4] = [
         ("CPU", format!("{:.0}%", s.cpu), if s.cpu >= 95.0 { 2 } else if s.cpu >= 85.0 { 1 } else { 0 }),
-        ("GPU", temp.map_or("—".into(), |t| format!("{t:.0}°C")), temp.map_or(0, |t| if t >= 85.0 { 2 } else if t >= 80.0 { 1 } else { 0 })),
+        ("GPU", gpu_load.map_or("—".into(), |u| format!("{u:.0}%")), 0),
         ("RAM", format!("{:.0}%", used * 100.0), if used >= 0.92 { 2 } else if used >= 0.85 { 1 } else { 0 }),
         ("NET", fmt::rate(down), 0),
     ];
+    let heat: [(&str, String, u8); 2] = [
+        ("CPU", "—".into(), 0),
+        ("GPU", temp.map_or("—".into(), |t| format!("{t:.0}°C")), temp.map_or(0, |t| if t >= 85.0 { 2 } else if t >= 80.0 { 1 } else { 0 })),
+    ];
     let sx = dx + 14.0;
-    p.text(pos2(sx, full.min.y + 13.0), Align2::LEFT_CENTER, "SYSTEM", sb(9.5), txt_faint());
     let btn = Rect::from_center_size(pos2(full.max.x - 24.0, cy), vec2(30.0, 30.0));
-    let sw = (btn.min.x - 8.0 - sx) / 4.0;
-    for (i, (label, value, level)) in sys.iter().enumerate() {
-        let x = sx + i as f32 * sw;
-        let col = warn(*level);
-        if *level > 0 {
-            p.circle_filled(pos2(x + 3.0, cy + 13.0), 3.0, col);
+    let cols = sx + 38.0;
+    let cw = (btn.min.x - 10.0 - cols) / 4.4;
+    let col_x = |i: usize| cols + i as f32 * cw;
+    for (row, y, cells) in [("LOAD", cy - 10.0, &load[..]), ("TEMP", cy + 11.0, &heat[..])] {
+        p.text(pos2(sx, y), Align2::LEFT_CENTER, row, sb(9.0), txt_faint());
+        for (i, (label, value, level)) in cells.iter().enumerate() {
+            let x = col_x(i);
+            let w = if i == 3 { btn.min.x - 10.0 - x } else { cw };
+            let col = warn(*level);
+            let lr = p.text(pos2(x, y), Align2::LEFT_CENTER, *label, reg(9.5), txt_faint());
+            let vx = lr.max.x + 5.0;
+            widgets::fit(&p, pos2(vx, y), Align2::LEFT_CENTER, value, if *level > 0 { sb(12.5) } else { reg(12.5) }, w - (vx - x) - 4.0, col);
         }
-        widgets::fit(&p, pos2(x, cy + 1.0), Align2::LEFT_CENTER, value, if *level > 0 { sb(12.5) } else { reg(12.5) }, sw - 4.0, col);
-        p.text(pos2(x + if *level > 0 { 10.0 } else { 0.0 }, cy + 15.0), Align2::LEFT_CENTER, *label, reg(9.5), txt_faint());
     }
 
     // ---- open the full app ------------------------------------------------------------
