@@ -53,11 +53,13 @@ struct State {
     shown: Ping,
     /// another address that out-sends `want`, and since when (a switch waits a moment)
     lead: Option<([u8; 4], Instant)>,
+    /// when `want` was last among the addresses sent to
+    busy: Option<Instant>,
 }
 
 fn state() -> &'static Mutex<State> {
     static S: OnceLock<Mutex<State>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(State { want: None, asked: None, shown: Ping::None, lead: None }))
+    S.get_or_init(|| Mutex::new(State { want: None, asked: None, shown: Ping::None, lead: None, busy: None }))
 }
 
 /// The ping to whatever these processes talk to. Called while the bar is open; the pinging
@@ -72,8 +74,12 @@ pub fn reading(pids: &[u32]) -> Ping {
     s.asked = Some(Instant::now());
     let Some(best) = flows.first().map(|x| (x.0, x.3)) else {
         s.lead = None;
-        return Ping::None;
+        // a quiet moment (a loading screen, a hitch): keep the reading a few seconds
+        return if s.busy.is_some_and(|b| b.elapsed() < Duration::from_secs(5)) { s.shown } else { Ping::None };
     };
+    if s.want.is_some_and(|w| flows.iter().any(|x| x.0 == w)) {
+        s.busy = Some(Instant::now());
+    }
     // Stay with the server while it is still one of the busy ones: games also send bursts
     // elsewhere now and then (Roblox probes 25 relay sites every few minutes), and hopping
     // over to those for a second would show their ping and restart the search each time.
@@ -84,6 +90,7 @@ pub fn reading(pids: &[u32]) -> Ping {
             s.want = Some(best.0);
             s.shown = Ping::Finding;
             s.lead = None;
+            s.busy = Some(Instant::now());
             let list: Vec<String> = flows.iter().take(6).map(|x| format!("{} {}:{} score {:.0}", if x.1 { "udp" } else { "tcp" }, ip_str(x.0), x.2, x.3)).collect();
             log(&format!("server {} (of: {})", ip_str(best.0), list.join(", ")));
         } else if s.lead.map(|l| l.0) != Some(best.0) {
@@ -183,6 +190,8 @@ fn worker() {
     let mut misses = 0u32;
     let mut logged = 0u32;
     let mut hidden_since: Option<([u8; 4], Instant)> = None;
+    // how each server was timed before, so coming back to a game doesn't search again
+    let mut known: std::collections::HashMap<[u8; 4], [u8; 4]> = std::collections::HashMap::new();
     loop {
         std::thread::sleep(Duration::from_secs(1));
         let (want, active) = match state().lock() {
@@ -197,14 +206,20 @@ fn worker() {
             }
             samples.clear();
             misses = 0;
+            if let Some(&to) = known.get(&target) {
+                cur = Some((target, to, to != target));
+                continue;
+            }
             // the server itself first, three tries
             let direct = (0..3).find_map(|_| echo(h, target, 0, 1000).filter(|r| r.1 == IP_SUCCESS));
             if let Some((_, _, ms)) = direct {
+                known.insert(target, target);
                 cur = Some((target, target, false));
                 samples.push_back(ms);
                 log(&format!("  {} answers pings: {ms:.1} ms", ip_str(target)));
             } else if let Some(r) = entry_router(h, target) {
                 cur = Some((target, r, r != target));
+                known.insert(target, r);
                 log(&format!("  {} is silent; timing its network's entry router {}", ip_str(target), ip_str(r)));
             } else {
                 cur = None;
@@ -234,17 +249,21 @@ fn worker() {
         if misses >= 10 {
             // the route changed: look again
             cur = None;
+            known.remove(&target);
             publish(target, Ping::Finding);
             continue;
         }
-        if misses >= 3 || samples.is_empty() {
+        if misses >= 5 || samples.is_empty() {
             publish(target, Ping::Finding);
             continue;
         }
-        // the median of the last few, so one late packet doesn't make the number jump
+        // A server: the median of the last few, so one late packet doesn't make it jump.
+        // A router: the fastest of the last few. Routers answer pings on their slow side
+        // when busy (here every other reply came back 40 ms late), which is delay in the
+        // router, not on the way; the game's packets pass straight through it.
         let mut v: Vec<f32> = samples.iter().copied().collect();
         v.sort_by(|a, b| a.total_cmp(b));
-        publish(target, Ping::Ms(v[v.len() / 2], est));
+        publish(target, Ping::Ms(if est { v[0] } else { v[v.len() / 2] }, est));
     }
 }
 
