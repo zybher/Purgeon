@@ -32,7 +32,9 @@ and write down anything that looks wrong.
 
 ## FPS in the bar
 - [ ] Without Elevate, the bar's first number reads "Elevate / for FPS"
-- [ ] Click Elevate, approve, then open Roblox and press Alt+Shift+P: the FPS number roughly matches Roblox's own counter (Shift+F5), within a few frames
+- [ ] Click Elevate, approve, then open Roblox and press Alt+Shift+P: the big FPS number matches Roblox's own counter (Shift+F5) within a few frames (it used to read about a fifth low). It trails the game by about half a second
+- [ ] In the FPS box, AVG, HIGH, LOW and 1% LOW fill in after a few seconds and start over each time the bar opens. 1% LOW drops when the game stutters
+- [ ] With Claude, Discord or a browser in front, the box says "Not a game: it only redraws on changes" instead of a small, jumpy number
 - [ ] Same with another game you have (a DirectX one); with the game capped at your monitor's refresh rate it should show that number
 - [ ] Roblox launches and plays normally with Purgeon elevated and the bar open: no "third-party software" error, no kick
 - [ ] Alt-tab to the desktop with the bar open: FPS shows "—" for Explorer, then the game's number again when you go back

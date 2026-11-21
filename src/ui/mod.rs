@@ -311,6 +311,13 @@ impl eframe::App for App {
             self.snap = Some(s);
         }
         overlay::show(ctx, self.snap.as_deref());
+        // dev check in screenshot mode (`PURGEON_FPS_DEMO`): the bar drawn on top of the window
+        if std::env::var_os("PURGEON_SHOT").is_some() && std::env::var_os("PURGEON_FPS_DEMO").is_some() {
+            let r = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(overlay::W, overlay::H));
+            let mut ui = egui::Ui::new(ctx.clone(), egui::LayerId::new(egui::Order::Foreground, egui::Id::new("bar_demo")), egui::Id::new("bar_demo"), egui::UiBuilder::new().max_rect(r));
+            ui.painter().rect_filled(r, 0.0, crate::theme::card());
+            overlay::test_bar(&mut ui, self.snap.as_deref());
+        }
         if self.shared.hidden.load(Ordering::Relaxed) {
             // In the tray: draw nothing and ask for nothing, until the tray shows the window
             return;

@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 
 const TITLE: &str = "Purgeon overlay";
-pub(super) const W: f32 = 920.0;
+pub(super) const W: f32 = 1040.0;
 pub(super) const H: f32 = 64.0;
 /// Gap between the top of the screen and the bar, in points
 const TOP: f32 = 10.0;
@@ -151,6 +151,7 @@ pub fn toggle(ctx: &egui::Context) {
     if open {
         track_front();
         SHUT.store(false, Ordering::Relaxed);
+        crate::sys::etw::frames_reset();
     }
     OPEN.store(open, Ordering::Relaxed);
     ctx.request_repaint();
@@ -330,6 +331,63 @@ fn warn(level: u8) -> Color32 {
     }
 }
 
+/// The FPS box: the frame rate now, large, and beside it the average, high, low and 1% low
+/// since the bar opened on this app
+fn fps_box(p: &egui::Painter, r: Rect, pids: &[u32], text: &dyn Fn(Option<&'static str>, Pos2, Align2, &str, FontId, Color32)) {
+    use crate::sys::etw::{self, Frames};
+    p.rect_filled(r, 8.0, card_hi());
+    let cy = r.center().y;
+    let x = r.min.x + 12.0;
+    let big = |value: &str, label: &str, col: Color32| {
+        widgets::fit(p, pos2(x, cy - 7.0), Align2::LEFT_CENTER, value, sb(19.0), 62.0, col);
+        p.text(pos2(x, cy + 13.0), Align2::LEFT_CENTER, label, reg(10.5), txt_faint());
+        text(None, pos2(x, cy - 7.0), Align2::LEFT_CENTER, value, sb(19.0), col);
+        text(None, pos2(x, cy + 13.0), Align2::LEFT_CENTER, label, reg(10.5), txt_faint());
+    };
+    let side = r.min.x + 82.0;
+    let note = |a: &str, b: &str| {
+        for (i, line) in [a, b].into_iter().enumerate() {
+            let pos = pos2(side, cy - 7.0 + i as f32 * 14.0);
+            p.text(pos, Align2::LEFT_CENTER, line, reg(10.5), txt_faint());
+            text(None, pos, Align2::LEFT_CENTER, line, reg(10.5), txt_faint());
+        }
+    };
+    // dev check of the layout in screenshot mode (`PURGEON_FPS_DEMO`), made-up numbers
+    let demo = std::env::var_os("PURGEON_SHOT").is_some() && std::env::var_os("PURGEON_FPS_DEMO").is_some();
+    if !demo && etw::frames() == Frames::NotAllowed {
+        big("Elevate", "for FPS", txt_dim());
+        note("Windows lets only", "admins count frames");
+        return;
+    }
+    let s = if demo {
+        etw::FrameStats { now: Some(145.0), drawing: true, avg: Some(142.6), high: Some(151.0), low: Some(128.0), low1: Some(97.0) }
+    } else {
+        etw::frame_stats(pids)
+    };
+    let n = |v: Option<f32>| v.map_or("—".to_string(), |v| format!("{v:.0}"));
+    match s.now {
+        Some(v) => big(&format!("{v:.0}"), "FPS", txt()),
+        None => big("—", "FPS", txt_dim()),
+    }
+    if s.now.is_none() && s.avg.is_none() {
+        if s.drawing {
+            note("Not a game: it only", "redraws on changes");
+        } else {
+            note("No frames seen", "(DirectX games only)");
+        }
+        return;
+    }
+    let cells = [("AVG", n(s.avg)), ("1% LOW", n(s.low1)), ("HIGH", n(s.high)), ("LOW", n(s.low))];
+    for (i, (label, value)) in cells.iter().enumerate() {
+        let (cx, y) = (side + (i / 2) as f32 * 64.0, cy - 7.0 + (i % 2) as f32 * 15.0);
+        let lr = p.text(pos2(cx, y), Align2::LEFT_CENTER, *label, reg(9.0), txt_faint());
+        let vpos = pos2(lr.max.x + 4.0, y);
+        p.text(vpos, Align2::LEFT_CENTER, value, sb(11.5), txt_dim());
+        text(None, pos2(cx, y), Align2::LEFT_CENTER, label, reg(9.0), txt_faint());
+        text(None, vpos, Align2::LEFT_CENTER, value, sb(11.5), txt_dim());
+    }
+}
+
 fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
     let full = ui.max_rect();
     let p = ui.painter().clone();
@@ -346,7 +404,7 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
     // ---- the app in front -------------------------------------------------------------
     let front = FRONT.load(Ordering::Relaxed);
     let u = usage(s, pid_of(front));
-    let left = Rect::from_min_max(full.min + vec2(14.0, 0.0), pos2(full.min.x + 560.0, full.max.y));
+    let left = Rect::from_min_max(full.min + vec2(14.0, 0.0), pos2(full.min.x + 680.0, full.max.y));
     let cy = full.center().y;
     match &u {
         None => {
@@ -370,21 +428,11 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
                 ("GPU", if s.gpu_proc { format!("{:.0}%", u.gpu) } else { "—".into() }, u.gpu / 100.0, GPU_COL),
             ];
             let x0 = nx + 132.0;
-            let cw = (left.max.x - x0) / 5.0;
-            // FPS first: for a game it is the number that matters most
-            {
-                let (value, label, col) = match crate::sys::etw::frames() {
-                    crate::sys::etw::Frames::Counting => {
-                        (crate::sys::etw::fps(&u.pids).map_or("—".into(), |f| format!("{f:.0}")), "FPS", txt())
-                    }
-                    crate::sys::etw::Frames::NotAllowed => ("Elevate".to_string(), "for FPS", txt_dim()),
-                };
-                widgets::fit(&p, pos2(x0, cy - 9.0), Align2::LEFT_CENTER, &value, sb(15.0), cw - 12.0, col);
-                p.text(pos2(x0, cy + 9.0), Align2::LEFT_CENTER, label, reg(10.5), txt_faint());
-                text(None, pos2(x0, cy - 9.0), Align2::LEFT_CENTER, &value, sb(15.0), col);
-                text(None, pos2(x0, cy + 9.0), Align2::LEFT_CENTER, label, reg(10.5), txt_faint());
-            }
-            let x0 = x0 + cw;
+            // FPS first, in its own box: for a game it is the number that matters most
+            let fb = Rect::from_min_max(pos2(x0 - 10.0, full.min.y + 9.0), pos2(x0 + 206.0, full.max.y - 9.0));
+            fps_box(&p, fb, &u.pids, &text);
+            let x0 = fb.max.x + 16.0;
+            let cw = (left.max.x - x0) / 4.0;
             for (i, (label, value, frac, col)) in stats.iter().enumerate() {
                 let x = x0 + i as f32 * cw;
                 widgets::fit(&p, pos2(x, cy - 9.0), Align2::LEFT_CENTER, value, sb(15.0), cw - 12.0, txt());

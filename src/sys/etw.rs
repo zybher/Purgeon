@@ -53,6 +53,7 @@ const KERNEL_LOGGER: &str = "NT Kernel Logger";
 const WNODE_FLAG_TRACED_GUID: u32 = 0x0002_0000;
 const EVENT_TRACE_REAL_TIME_MODE: u32 = 0x100;
 const EVENT_TRACE_SYSTEM_LOGGER_MODE: u32 = 0x0200_0000;
+const EVENT_TRACE_USE_MS_FLUSH_TIMER: u32 = 0x10;
 const EVENT_TRACE_FLAG_DISK_IO: u32 = 0x100;
 const EVENT_TRACE_FLAG_NETWORK_TCPIP: u32 = 0x1_0000;
 const EVENT_TRACE_CONTROL_STOP: u32 = 1;
@@ -212,7 +213,8 @@ fn props_with(guid: Guid, mode: u32, enable_flags: u32) -> Props {
         max_buffers: 16,
         max_file_size: 0,
         log_file_mode: mode,
-        flush_timer: 1,
+        // the frame session flushes every 200 ms (EVENT_TRACE_USE_MS_FLUSH_TIMER), the rest each second
+        flush_timer: if mode & EVENT_TRACE_USE_MS_FLUSH_TIMER != 0 { 200 } else { 1 },
         enable_flags,
         age_limit: 0,
         number_of_buffers: 0,
@@ -450,7 +452,7 @@ fn start_frames() -> bool {
     let mut f = 0i64;
     unsafe { QueryPerformanceFrequency(&mut f) };
     QPC_FREQ.store(f.max(1), Ordering::Relaxed);
-    let (r, h) = start_session_with(FRAME_SESSION, FRAME_GUID, EVENT_TRACE_REAL_TIME_MODE, 0);
+    let (r, h) = start_session_with(FRAME_SESSION, FRAME_GUID, EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_USE_MS_FLUSH_TIMER, 0);
     if r != 0 {
         return false;
     }
@@ -491,36 +493,125 @@ fn stop_frames() {
     unsafe { ControlTraceW(0, n.as_ptr(), &mut p, EVENT_TRACE_CONTROL_STOP) };
 }
 
-/// Frames per second of whichever of these processes draws the most, over about the last
-/// second and a half (Windows hands the events over up to a second late). `None` when none
-/// of them has shown a frame lately (not a DirectX app, minimized, or a loading pause).
-pub fn fps(pids: &[u32]) -> Option<f32> {
+/// How long after a frame Windows is sure to have handed its event over. Each CPU keeps its
+/// own buffer and a quiet CPU's buffer only arrives at the flush (every 200 ms here), so the
+/// newest stretch is always missing some frames; counting it read about a fifth too low.
+const SETTLE: f64 = 0.45;
+
+/// The FPS numbers for the app in front, since the bar opened on it
+#[derive(Clone, Copy, Default)]
+pub struct FrameStats {
+    /// Frames in the last second; `None` when it doesn't draw steadily (see `drawing`)
+    pub now: Option<f32>,
+    /// It drew frames lately, just not continuously: a normal app that redraws on change
+    pub drawing: bool,
+    pub avg: Option<f32>,
+    pub high: Option<f32>,
+    pub low: Option<f32>,
+    /// The frame rate the slowest 1% of frames ran at (how bad the stutters get)
+    pub low1: Option<f32>,
+}
+
+struct Session {
+    pid: u32,
+    /// Frames up to this QPC time are already counted
+    mark: i64,
+    prev: Option<i64>,
+    /// Seconds between frames, while it drew steadily
+    gaps: Vec<f32>,
+    /// One FPS reading per second
+    secs: Vec<f32>,
+    next_sec: i64,
+    cached: FrameStats,
+}
+
+static RESET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Starts the average, high and low over (the bar just opened)
+pub fn frames_reset() {
+    RESET.store(true, Ordering::Relaxed);
+}
+
+fn session() -> &'static Mutex<Option<Session>> {
+    static S: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// The numbers for whichever of these processes draws the most
+pub fn frame_stats(pids: &[u32]) -> FrameStats {
     let f = QPC_FREQ.load(Ordering::Relaxed) as f64;
     let mut now = 0i64;
     unsafe { QueryPerformanceCounter(&mut now) };
-    let Ok(mut s) = shown().lock() else { return None };
-    // forget programs that stopped drawing
-    s.retain(|_, q| q.back().is_some_and(|&t| (now - t) as f64 <= 5.0 * f));
-    let mut best: Option<f32> = None;
-    for pid in pids {
-        let Some(q) = s.get(pid) else { continue };
-        let Some(&last) = q.back() else { continue };
-        if (now - last) as f64 > 2.5 * f {
-            continue;
-        }
-        let from = last - (1.5 * f) as i64;
-        let recent: Vec<i64> = q.iter().copied().filter(|&t| t >= from).collect();
-        if recent.len() < 3 {
-            continue;
-        }
-        let span = (recent[recent.len() - 1] - recent[0]) as f64 / f;
-        if span < 0.2 {
-            continue;
-        }
-        let rate = ((recent.len() - 1) as f64 / span) as f32;
-        best = Some(best.map_or(rate, |b| b.max(rate)));
+    let cut = now - (SETTLE * f) as i64;
+    let sec = f as i64;
+    // the settled frames of the busiest process, oldest first
+    let (pid, times) = {
+        let Ok(mut s) = shown().lock() else { return FrameStats::default() };
+        s.retain(|_, q| q.back().is_some_and(|&t| (now - t) as f64 <= 5.0 * f));
+        let pick = pids.iter().filter_map(|p| s.get(p).map(|q| (*p, q.len()))).max_by_key(|x| x.1);
+        let Some((pid, _)) = pick else { return FrameStats::default() };
+        let mut t: Vec<i64> = s[&pid].iter().copied().filter(|&t| t <= cut).collect();
+        t.sort_unstable();
+        (pid, t)
+    };
+    let Ok(mut guard) = session().lock() else { return FrameStats::default() };
+    if RESET.swap(false, Ordering::Relaxed) || guard.as_ref().map_or(true, |g| g.pid != pid) {
+        *guard = Some(Session { pid, mark: cut, prev: None, gaps: Vec::new(), secs: Vec::new(), next_sec: cut + sec, cached: FrameStats::default() });
     }
-    best
+    let g = guard.as_mut().expect("set above");
+
+    // the last second: how many frames, and whether it drew all along
+    let last: Vec<i64> = times.iter().copied().filter(|&t| t > cut - sec).collect();
+    let mut biggest = 0i64;
+    let mut at = cut - sec;
+    for &t in &last {
+        biggest = biggest.max(t - at);
+        at = t;
+    }
+    biggest = biggest.max(cut - at);
+    // a game redraws all the time; an app that waits a quarter second between frames is just
+    // redrawing what changed (a blinking caret, a scrolled page)
+    let steady = last.len() >= 4 && (biggest as f64) < 0.25 * f;
+    let rate = last.len() as f32;
+
+    for &t in times.iter().filter(|&&t| t > g.mark) {
+        if let Some(p) = g.prev {
+            let gap = ((t - p) as f64 / f) as f32;
+            if steady && gap < 0.25 {
+                g.gaps.push(gap);
+            }
+        }
+        g.prev = Some(t);
+    }
+    g.mark = cut;
+    if g.gaps.len() > 200_000 {
+        g.gaps.drain(..100_000);
+    }
+
+    // once a second: note the reading and work out the rest
+    if cut >= g.next_sec {
+        g.next_sec = cut + sec;
+        if steady {
+            g.secs.push(rate);
+        }
+        let mut c = FrameStats::default();
+        let total: f32 = g.gaps.iter().sum();
+        if g.gaps.len() >= 10 && total > 0.0 {
+            c.avg = Some(g.gaps.len() as f32 / total);
+        }
+        c.high = g.secs.iter().copied().reduce(f32::max);
+        c.low = g.secs.iter().copied().reduce(f32::min);
+        if g.gaps.len() >= 100 {
+            let mut v = g.gaps.clone();
+            let i = ((v.len() as f32 * 0.99) as usize).min(v.len() - 1);
+            let (_, worst, _) = v.select_nth_unstable_by(i, |a, b| a.total_cmp(b));
+            if *worst > 0.0 {
+                c.low1 = Some(1.0 / *worst);
+            }
+        }
+        g.cached = c;
+    }
+    FrameStats { now: steady.then_some(rate), drawing: !last.is_empty(), ..g.cached }
 }
 
 /// Ends the trace session (call on exit: kernel sessions outlive the process otherwise)
