@@ -21,6 +21,11 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
     #[cfg(feature = "bench")]
+    if std::env::args().any(|a| a == "--bench-mem") {
+        sys::bench::run_mem();
+        return Ok(());
+    }
+    #[cfg(feature = "bench")]
     if let Some(i) = std::env::args().position(|a| a == "--load") {
         sys::bench::load(&std::env::args().skip(i + 1).collect::<Vec<_>>());
         return Ok(());

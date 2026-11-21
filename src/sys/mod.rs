@@ -58,6 +58,14 @@ pub struct Proc {
     pub conns: net::Conns,
 }
 
+impl Proc {
+    /// RAM this process shares with others (DLLs, mapped files, shared memory): the part of its
+    /// working set that is not private
+    pub fn shared(&self) -> u64 {
+        self.working_set.saturating_sub(self.private_ws)
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct MemLists {
     pub free: u64,

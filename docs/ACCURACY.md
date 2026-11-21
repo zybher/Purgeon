@@ -93,15 +93,42 @@ computes its "Speed".
 
 ### Per process
 
-| Column | Source | Meaning |
-|---|---|---|
-| **Memory (default): Private working set** | `WorkingSetPrivateSize` | Physical RAM only this process uses. Task Manager's "Memory" column. |
-| Working set | `WorkingSetSize` | All physical RAM mapped into the process, including pages shared with other processes (DLLs, mapped files). Adding these up across processes counts shared pages more than once. |
-| Commit | `PrivatePageCount` | Private memory the process has reserved backing for, in RAM or the page file. Grows when a program leaks memory, even if Windows has paged it out. |
+The Processes page has one memory column, **RAM**: how much physical memory the app holds right
+now. Pointing at a number shows what it is made of.
 
-You can switch which one the Memory column shows on the Processes page. On one test run the
-private working set matched perfmon's `Working Set - Private` exactly for the three biggest
-processes.
+| Shown as | Source | Meaning |
+|---|---|---|
+| **RAM** | `WorkingSetSize` | Every page of RAM the process holds: its own, plus pages it shares (DLLs, mapped files, shared memory). This is what lowers available RAM. |
+| Only this app | `WorkingSetPrivateSize` | RAM only this process uses. Task Manager's "Memory" column. |
+| Shared with other apps | `WorkingSetSize − WorkingSetPrivateSize` | Pages other processes may map too. |
+| Reserved | `PrivatePageCount` (commit) | Private memory the process has asked Windows to set aside, in RAM or the page file. It can be much larger than RAM use, and grows when a program leaks memory. |
+
+**Why RAM and not Task Manager's number.** Task Manager's "Memory" leaves out shared pages, so an
+app that loads big files, or uses shared memory (browsers, game engines and graphics drivers
+do), can lower available RAM by far more than Task Manager shows. Commit is no better as a
+headline: memory that is reserved but never written uses no RAM at all. The working set is the
+one figure that tracks what available RAM loses, which the test below shows.
+
+**Groups.** With "Group by name" on, a group's RAM is every member's private memory plus the
+*largest* member's shared memory. Processes of one program mostly share the same pages
+(the same DLLs, the same shared memory), so adding up their shared parts would count those
+pages many times; 30 browser processes could otherwise appear to hold gigabytes they don't.
+This is an estimate: a group whose members share different pages reads a little low. The same
+rule is used for "Top memory" on the Overview.
+
+**Tested** (`cargo run --release --features bench -- --bench-mem`, two runs, same machine as
+below). A small helper process reserved or used memory of a known size; the table shows how
+much each figure rose, and how much available RAM fell:
+
+| What the helper did | Only this app (Task Manager) | RAM (Purgeon) | Reserved | Available RAM fell by |
+|---|---|---|---|---|
+| Reserved 512 MB, never used it | 0 MB | 0.1 MB | 513 MB | 12 MB, 47 MB (noise from other apps) |
+| Used 256 MB of shared memory | 0 MB | 256 MB | 0.5 MB | 257 MB, 254 MB |
+
+Task Manager's number missed the shared memory completely, and so did commit, while available
+RAM fell by the full 256 MB. Purgeon's RAM figure matched it. The reserved-only memory moved
+commit but not RAM, as expected. The private working set also matched perfmon's
+`Working Set - Private` exactly (see [Measured results](#measured-results)).
 
 ### System
 
@@ -194,8 +221,8 @@ Both stay within 2% of a known CPU load. Purgeon reads slightly high and the Win
 slightly low, by about the same amount. The bursty test was meant to catch the 15.6 ms timer-tick
 undercount described above. It did not show up here: the Windows counter was within 1.5%.
 Something on the PC may have raised the timer rate, which makes tick accounting finer, so other
-machines may still differ. Memory and per-program disk writes match exactly, because Purgeon and
-Task Manager read the same values.
+machines may still differ. Private memory and per-program disk writes match exactly, because Purgeon and
+Task Manager read the same values. (Purgeon's RAM column also counts shared memory; see Memory.)
 
 Not tested yet: GPU and VRAM, administrator mode (per-program physical disk and network), and
 other CPUs.

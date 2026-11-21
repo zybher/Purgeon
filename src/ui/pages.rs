@@ -61,7 +61,9 @@ struct Group {
     path: Option<std::sync::Arc<str>>,
     count: u32,
     cpu: f32,
+    /// RAM in use: private memory of every member plus the largest member's shared memory
     mem: u64,
+    shared: u64,
     vram: u64,
     disk_r: f64,
     disk_w: f64,
@@ -80,6 +82,7 @@ fn grouped(s: &Snapshot) -> Vec<Group> {
             count: 0,
             cpu: 0.0,
             mem: 0,
+            shared: 0,
             vram: 0,
             disk_r: 0.0,
             disk_w: 0.0,
@@ -93,6 +96,7 @@ fn grouped(s: &Snapshot) -> Vec<Group> {
         }
         g.cpu += p.cpu;
         g.mem += p.private_ws;
+        g.shared = g.shared.max(p.shared());
         g.vram += p.vram;
         g.disk_r += p.disk_read;
         g.disk_w += p.disk_write;
@@ -102,7 +106,11 @@ fn grouped(s: &Snapshot) -> Vec<Group> {
         g.conns.listen += p.conns.listen;
         g.conns.udp += p.conns.udp;
     }
-    m.into_values().collect()
+    let mut v: Vec<Group> = m.into_values().collect();
+    for g in &mut v {
+        g.mem += g.shared;
+    }
+    v
 }
 
 /// A card listing the top groups with a bar each

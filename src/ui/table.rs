@@ -11,20 +11,12 @@ use std::time::Instant;
 
 const ROW_H: f32 = 28.0;
 const HEAD_H: f32 = 34.0;
-/// What the Memory column shows
-const MEM_MODES: [&str; 3] = ["Private", "Working set", "Commit"];
-const MEM_TIPS: [&str; 3] = [
-    "Memory = private working set: physical memory only this process uses. Task Manager's \"Memory\" column.",
-    "Memory = working set: all physical memory mapped by the process, including pages shared with other processes. Adding these up counts shared pages more than once.",
-    "Memory = commit: private memory the process has reserved, in RAM or the page file. Keeps growing when a program leaks memory.",
-];
-const COL_NAMES: [(Col, &str); 12] = [
+const RAM_TIP: &str = "How much of your RAM this app is holding right now, including memory it shares with other apps. This is what lowers your available RAM. Point at a number to see what it is made of.";
+const COL_NAMES: [(Col, &str); 10] = [
     (Col::Name, "name"),
     (Col::Pid, "pid"),
     (Col::Cpu, "cpu"),
-    (Col::Private, "memory"),
-    (Col::Ws, "workingset"),
-    (Col::Commit, "commit"),
+    (Col::Ram, "memory"),
     (Col::Io, "io"),
     (Col::Disk, "disk"),
     (Col::Gpu, "gpu"),
@@ -38,9 +30,7 @@ pub enum Col {
     Name,
     Pid,
     Cpu,
-    Private,
-    Ws,
-    Commit,
+    Ram,
     Io,
     Disk,
     Gpu,
@@ -51,12 +41,10 @@ pub enum Col {
 
 /// Columns right of the name: (column, title, width, explanation, priority).
 /// Lower priority columns are hidden first when the window is too narrow.
-const COLS: [(Col, &str, f32, &str, u8); 11] = [
+const COLS: [(Col, &str, f32, &str, u8); 9] = [
     (Col::Pid, "PID", 62.0, "Process ID. Grouped rows show how many processes share the name.", 9),
     (Col::Cpu, "CPU", 68.0, "Share of the whole CPU over the last update (100% = every logical processor busy).", 9),
-    (Col::Private, "Memory", 88.0, "Private working set: physical memory only this process uses. Task Manager's \"Memory\" column.", 9),
-    (Col::Ws, "Working set", 96.0, "All physical memory mapped by the process, including pages shared with others (DLLs, mapped files).", 3),
-    (Col::Commit, "Commit", 86.0, "Private bytes the process has committed (RAM or page file).", 2),
+    (Col::Ram, "RAM", 88.0, RAM_TIP, 9),
     (Col::Io, "I/O", 86.0, "Bytes read + written per second across file, network and device I/O.", 8),
     (Col::Disk, "Disk", 86.0, "Physical disk reads + writes per second: only I/O that reached the disk (no network, no cache hits). Needs administrator.", 8),
     (Col::Gpu, "GPU", 62.0, "Busiest GPU engine this process uses (the way Task Manager counts it).", 8),
@@ -64,6 +52,17 @@ const COLS: [(Col, &str, f32, &str, u8); 11] = [
     (Col::Threads, "Threads", 64.0, "Number of threads.", 1),
     (Col::Handles, "Handles", 70.0, "Number of open kernel object handles.", 4),
 ];
+
+/// The RAM cell's hover text, in plain words
+fn ram_breakdown(r: &Row) -> String {
+    format!(
+        "In RAM: {}\n   Only this app: {}  (Task Manager's \"Memory\")\n   Shared with other apps: {}\n\nReserved: {}\nMemory the app has asked Windows to set aside. It can be more than what is in RAM, and keeps growing if the app leaks memory.",
+        fmt::bytes(r.ram()),
+        fmt::bytes(r.private_ws),
+        fmt::bytes(r.shared),
+        fmt::bytes(r.commit),
+    )
+}
 
 #[derive(Clone)]
 struct Row {
@@ -73,7 +72,9 @@ struct Row {
     count: u32,
     cpu: f32,
     private_ws: u64,
-    ws: u64,
+    /// RAM shared with other apps. For a group, the largest member's, since processes of one
+    /// program mostly share the same pages and adding them up would count those pages again.
+    shared: u64,
     commit: u64,
     io: f64,
     disk: f64,
@@ -83,6 +84,13 @@ struct Row {
     handles: u32,
 }
 
+impl Row {
+    /// What the RAM column shows: memory only this app uses plus memory it shares
+    fn ram(&self) -> u64 {
+        self.private_ws + self.shared
+    }
+}
+
 pub struct TableState {
     search: String,
     sort: Col,
@@ -90,9 +98,7 @@ pub struct TableState {
     group: bool,
     selected: Option<(String, Option<u32>)>,
     rows: Vec<Row>,
-    key: Option<(usize, Col, bool, bool, String, usize)>,
-    /// 0 private working set, 1 working set, 2 commit
-    mem_mode: usize,
+    key: Option<(usize, Col, bool, bool, String)>,
     /// End task waiting for the user's confirmation: (name, pid)
     confirm: Option<(String, u32)>,
     /// Result of the last End task, shown for a few seconds
@@ -112,7 +118,6 @@ impl Default for TableState {
             selected: None,
             rows: Vec::new(),
             key: None,
-            mem_mode: 0,
             confirm: None,
             note: None,
             scroll_y: 0.0,
@@ -123,7 +128,7 @@ impl Default for TableState {
 }
 
 impl TableState {
-    /// Restores `--sort=cpu[:asc]`, `--group=on` and `--mem=1` (used when relaunching elevated)
+    /// Restores `--sort=cpu[:asc]` and `--group=on` (used when relaunching elevated)
     pub fn from_args() -> Self {
         let mut t = TableState::default();
         for a in std::env::args() {
@@ -135,8 +140,6 @@ impl TableState {
                 }
             } else if let Some(v) = a.strip_prefix("--group=") {
                 t.group = v == "on";
-            } else if let Some(v) = a.strip_prefix("--mem=") {
-                t.mem_mode = v.parse::<usize>().unwrap_or(0).min(2);
             }
         }
         t
@@ -148,12 +151,11 @@ impl TableState {
         vec![
             format!("--sort={name}{}", if self.desc { "" } else { ":asc" }),
             format!("--group={}", if self.group { "on" } else { "off" }),
-            format!("--mem={}", self.mem_mode),
         ]
     }
 
     fn rebuild(&mut self, s: &Snapshot) {
-        let key = (s.seq as usize, self.sort, self.desc, self.group, self.search.clone(), self.mem_mode);
+        let key = (s.seq as usize, self.sort, self.desc, self.group, self.search.clone());
         if self.key.as_ref() == Some(&key) {
             return;
         }
@@ -170,7 +172,7 @@ impl TableState {
                     count: 0,
                     cpu: 0.0,
                     private_ws: 0,
-                    ws: 0,
+                    shared: 0,
                     commit: 0,
                     io: 0.0,
                     disk: 0.0,
@@ -185,7 +187,7 @@ impl TableState {
                 }
                 r.cpu += p.cpu;
                 r.private_ws += p.private_ws;
-                r.ws += p.working_set;
+                r.shared = r.shared.max(p.shared());
                 r.commit += p.commit;
                 r.io += p.io_read + p.io_write;
                 r.disk += p.disk_read + p.disk_write;
@@ -206,7 +208,7 @@ impl TableState {
                     count: 1,
                     cpu: p.cpu,
                     private_ws: p.private_ws,
-                    ws: p.working_set,
+                    shared: p.shared(),
                     commit: p.commit,
                     io: p.io_read + p.io_write,
                     disk: p.disk_read + p.disk_write,
@@ -218,21 +220,13 @@ impl TableState {
                 .collect()
         };
         let sort = self.sort;
-        let mem_mode = self.mem_mode;
-        let mem = |r: &Row| match mem_mode {
-            1 => r.ws,
-            2 => r.commit,
-            _ => r.private_ws,
-        };
         rows.sort_by(|a, b| {
             use std::cmp::Ordering;
             let o = match sort {
                 Col::Name => b.name.to_lowercase().cmp(&a.name.to_lowercase()),
                 Col::Pid => a.pid.unwrap_or(a.count).cmp(&b.pid.unwrap_or(b.count)),
                 Col::Cpu => a.cpu.total_cmp(&b.cpu),
-                Col::Private => mem(a).cmp(&mem(b)),
-                Col::Ws => a.ws.cmp(&b.ws),
-                Col::Commit => a.commit.cmp(&b.commit),
+                Col::Ram => a.ram().cmp(&b.ram()),
                 Col::Io => a.io.total_cmp(&b.io),
                 Col::Disk => a.disk.total_cmp(&b.disk),
                 Col::Gpu => a.gpu.total_cmp(&b.gpu),
@@ -264,19 +258,7 @@ impl TableState {
             fmt::thousands(s.threads as u64),
             fmt::thousands(s.handles as u64)
         );
-        let sub_r = p.text(pos2(hr.min.x, hr.min.y + 40.0), Align2::LEFT_CENTER, sub, reg(12.5), txt_faint());
-
-        // Which memory figure the Memory column shows
-        let mr = Rect::from_min_size(pos2(hr.max.x - 258.0, hr.min.y + 40.0), vec2(258.0, 24.0));
-        if mr.min.x > sub_r.max.x + 12.0 {
-            if widgets::segmented(ui, mr, &MEM_MODES, &mut self.mem_mode, egui::Id::new("mem_mode")) {
-                self.key = None;
-            }
-            ui.interact(mr, egui::Id::new("mem_mode_tip"), Sense::hover()).on_hover_text(MEM_TIPS[self.mem_mode]);
-            if mr.min.x - 110.0 > sub_r.max.x + 12.0 {
-                p.text(pos2(mr.min.x - 10.0, mr.center().y), Align2::RIGHT_CENTER, "Memory column", reg(12.0), txt_faint());
-            }
-        }
+        p.text(pos2(hr.min.x, hr.min.y + 40.0), Align2::LEFT_CENTER, sub, reg(12.5), txt_faint());
 
         let sw = Rect::from_min_size(pos2(hr.max.x - 36.0, hr.min.y + 9.0), vec2(36.0, 21.0));
         widgets::switch(ui, sw, &mut self.group).on_hover_text("Sum processes that share a name (all chrome.exe as one row)");
@@ -328,19 +310,7 @@ impl TableState {
         let inner = card.shrink2(vec2(8.0, 0.0));
 
         // Visible columns: drop the least important ones until the name column has room
-        let mm = self.mem_mode;
-        let mut cols: Vec<(Col, &str, f32, &str, u8)> = COLS
-            .iter()
-            .copied()
-            .filter(|c| c.0 != Col::Disk || s.disk_trace)
-            .filter(|c| !(mm == 1 && c.0 == Col::Ws) && !(mm == 2 && c.0 == Col::Commit))
-            .map(|mut c| {
-                if c.0 == Col::Private {
-                    c.3 = MEM_TIPS[mm];
-                }
-                c
-            })
-            .collect();
+        let mut cols: Vec<(Col, &str, f32, &str, u8)> = COLS.iter().copied().filter(|c| c.0 != Col::Disk || s.disk_trace).collect();
         while cols.iter().map(|c| c.2).sum::<f32>() + 230.0 > inner.width() {
             match cols.iter().enumerate().filter(|(_, c)| c.4 < 9).min_by_key(|(_, c)| c.4) {
                 Some((i, _)) => {
@@ -440,16 +410,12 @@ impl TableState {
                     let (text, heat, hcol, dim) = match c.0 {
                         Col::Pid => (row.pid.map_or_else(|| row.count.to_string(), |p| p.to_string()), 0.0, CPU_COL, true),
                         Col::Cpu => (fmt::pct(row.cpu), row.cpu / 30.0, CPU_COL, false),
-                        Col::Private => {
-                            let m = match mm {
-                                1 => row.ws,
-                                2 => row.commit,
-                                _ => row.private_ws,
-                            };
-                            (fmt::bytes(m), m as f32 / total_mem * 6.0, MEM_COL, false)
+                        Col::Ram => {
+                            if resp.hovered() && ctx.pointer_hover_pos().is_some_and(|q| cell.contains(q)) {
+                                resp.clone().on_hover_text(ram_breakdown(row));
+                            }
+                            (fmt::bytes(row.ram()), row.ram() as f32 / total_mem * 6.0, MEM_COL, false)
                         }
-                        Col::Ws => (fmt::bytes(row.ws), 0.0, MEM_COL, false),
-                        Col::Commit => (fmt::bytes(row.commit), 0.0, MEM_COL, false),
                         Col::Io => (fmt::rate(row.io), (row.io / (50.0 * 1048576.0)) as f32, IO_COL, false),
                         Col::Disk => (fmt::rate(row.disk), (row.disk / (50.0 * 1048576.0)) as f32, DISK_COL, row.disk == 0.0),
                         // GPU counters unavailable: unknown, not zero

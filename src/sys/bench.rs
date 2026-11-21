@@ -18,6 +18,12 @@
 //!    - disk: 256 MB written through to a temp file at 32 MB/s; the file is opened
 //!      delete-on-close, so Windows removes it even if the test is killed
 //!
+//!
+//! `--bench-mem` runs only two memory cases that private working set misses:
+//!    - reserve: 512 MB committed but never touched (uses no RAM)
+//!    - shared: 256 MB of shared memory (a page-file-backed section) touched; it uses RAM but
+//!      counts neither as private working set nor as the process's commit
+//!
 //!    Every load process exits on its own after at most 60 s, and the bench kills it after 60 s
 //!    too. Nothing touches the GPU, needs administrator, or loads a driver.
 
@@ -143,12 +149,54 @@ pub fn load(args: &[String]) {
             }
             written as f64
         }
+        "reserve" => {
+            let n = (amount.min(1024) as usize) << 20;
+            // committed by the allocator, never written, so never given RAM
+            let v: Vec<u8> = Vec::with_capacity(n);
+            std::hint::black_box(&v);
+            std::thread::sleep(Duration::from_secs(8));
+            drop(v);
+            n as f64
+        }
+        "shared" => shared_section((amount.min(512) as usize) << 20),
         _ => 0.0,
     };
     println!("TRUTH {truth}");
     let _ = std::io::stdout().flush();
     // stay idle a moment so the last busy interval is counted before the process disappears
     std::thread::sleep(Duration::from_secs(3));
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateFileMappingW(file: isize, attr: *const u8, protect: u32, hi: u32, lo: u32, name: *const u16) -> isize;
+    fn MapViewOfFile(map: isize, access: u32, hi: u32, lo: u32, size: usize) -> *mut u8;
+    fn UnmapViewOfFile(base: *const u8) -> i32;
+    fn CloseHandle(h: isize) -> i32;
+}
+
+/// Page-file-backed shared memory, every page written, held 8 s. Returns the bytes touched.
+fn shared_section(n: usize) -> f64 {
+    const PAGE_READWRITE: u32 = 0x04;
+    const FILE_MAP_WRITE: u32 = 0x02;
+    unsafe {
+        let m = CreateFileMappingW(-1, std::ptr::null(), PAGE_READWRITE, (n >> 32) as u32, n as u32, std::ptr::null());
+        if m == 0 {
+            return 0.0;
+        }
+        let p = MapViewOfFile(m, FILE_MAP_WRITE, 0, 0, n);
+        if p.is_null() {
+            CloseHandle(m);
+            return 0.0;
+        }
+        for i in (0..n).step_by(4096) {
+            p.add(i).write_volatile(1);
+        }
+        std::thread::sleep(Duration::from_secs(8));
+        UnmapViewOfFile(p);
+        CloseHandle(m);
+    }
+    n as f64
 }
 
 /// Kills the load process if the bench leaves early (panic, timeout)
@@ -167,6 +215,9 @@ struct Seen {
     present: bool,
     ours_cpu: f64,
     ours_pws: f64,
+    ours_ws: f64,
+    ours_commit: f64,
+    avail: f64,
     ours_io_write: f64,
     ours_drive_write: f64,
     pm_cpu: f64,
@@ -230,8 +281,11 @@ fn watch(c: &mut Collector, pf: &mut Perf, exe: &std::path::Path, kind: &str, am
             row.present = true;
             row.ours_cpu = p.cpu as f64 / 100.0 * c.info.logical as f64;
             row.ours_pws = p.private_ws as f64;
+            row.ours_ws = p.working_set as f64;
+            row.ours_commit = p.commit as f64;
             row.ours_io_write = p.io_write;
         }
+        row.avail = s.mem.avail as f64;
         row.ours_drive_write = s.disks.iter().map(|d| d.write).sum();
         row.pm_cpu = pf.get(pf.cpu, false).unwrap_or(0.0) / 100.0;
         row.pm_pws = pf.get(pf.pws, true).unwrap_or(0.0);
@@ -258,6 +312,47 @@ fn err_pct(seen: f64, truth: f64) -> f64 {
 // ---------------------------------------------------------------------------------------------
 // The bench
 // ---------------------------------------------------------------------------------------------
+
+/// The two memory cases private working set misses. Rise from the first sample to the peak (for
+/// Available, the deepest drop), in MB.
+pub fn run_mem() {
+    let mut c = Collector::new();
+    c.sample(1.0);
+    let mut pf = Perf::new();
+    let exe = std::env::temp_dir().join(LOAD_EXE);
+    let mut out = String::from("# Purgeon memory bench\n\n| Load | Truth (MB) | Private working set | Working set | Commit | Drop in available RAM |\n|---|---|---|---|---|---|\n");
+    if std::env::current_exe().ok().and_then(|me| std::fs::copy(me, &exe).ok()).is_none() {
+        out.push_str("Could not copy the load program; skipped.\n");
+    }
+    for (kind, mb, label) in [("reserve", 512, "512 MB committed, never touched"), ("shared", 256, "256 MB shared memory, touched")] {
+        if !exe.exists() {
+            break;
+        }
+        match watch(&mut c, &mut pf, &exe, kind, mb) {
+            Some((truth, v)) => {
+                let v: Vec<Seen> = v.into_iter().filter(|s| s.present).collect();
+                let Some(b) = v.first().copied() else { continue };
+                let rise = |f: fn(&Seen) -> f64| (v.iter().map(f).fold(f64::MIN, f64::max) - f(&b)) / 1048576.0;
+                let drop = (b.avail - v.iter().map(|s| s.avail).fold(f64::MAX, f64::min)) / 1048576.0;
+                let _ = writeln!(
+                    out,
+                    "| {label} | {:.0} | {:.1} | {:.1} | {:.1} | {:.0} |",
+                    truth / 1048576.0,
+                    rise(|s| s.ours_pws),
+                    rise(|s| s.ours_ws),
+                    rise(|s| s.ours_commit),
+                    drop
+                );
+            }
+            None => {
+                let _ = writeln!(out, "| {label} | failed | | | | |");
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&exe);
+    let _ = std::fs::write("bench-mem.md", &out);
+    println!("{out}");
+}
 
 pub fn run(secs: u32) {
     let mut q = pdh::Query::new().expect("PDH");
