@@ -4,6 +4,7 @@ mod graph;
 pub mod overlay;
 mod pages;
 mod icons;
+mod morph;
 mod table;
 mod tools;
 mod widgets;
@@ -63,6 +64,10 @@ pub struct App {
     uac_note: bool,
     /// Snapshots seen, to evict dead programs' icons now and then
     snaps: u64,
+    /// The overlay growing into the window, while it plays
+    morph: Option<morph::Run>,
+    /// Screenshot mode: the morph check was started
+    morph_tested: bool,
 }
 
 impl App {
@@ -101,6 +106,8 @@ impl App {
             hide_next: false,
             uac_note: false,
             snaps: 0,
+            morph: None,
+            morph_tested: false,
         }
     }
 
@@ -349,8 +356,36 @@ impl eframe::App for App {
         }
         let scroll = egui::emath::easing::cubic_out(scroll);
 
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(chrome())).show(ctx, |ui| {
+        // The overlay's expand button: the bar grows into this window, on the Overview page
+        if self.morph.is_none() {
+            if self.shot.is_some() && !self.morph_tested && self.snap.is_some() {
+                self.morph_tested = true;
+                morph::test_begin(ctx, self.snap.as_deref());
+            }
+            if let Some(m) = morph::take(ctx) {
+                self.morph = Some(m);
+                self.page = Page::Overview;
+                // the page rises in once the bar has nearly filled the window
+                self.page_at = Instant::now() + std::time::Duration::from_millis(230);
+            }
+        }
+        if self.morph.as_ref().is_some_and(|m| m.done()) {
+            // drops the copy of the screen
+            self.morph = None;
+            crate::platform::trim_memory();
+        }
+        if self.morph.is_some() {
+            ctx.request_repaint();
+        }
+
+        let fill = if self.morph.is_some() { Color32::TRANSPARENT } else { chrome() };
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(fill)).show(ctx, |ui| {
             let full = ui.max_rect();
+            if let Some(m) = &self.morph {
+                m.paint_back(ui.painter(), full);
+                ui.set_clip_rect(m.shape(full));
+                ui.multiply_opacity(m.content());
+            }
             let title = Rect::from_min_max(full.min, pos2(full.max.x, full.min.y + TITLE_H));
             let side = Rect::from_min_max(pos2(full.min.x, title.max.y), pos2(full.min.x + SIDE_W, full.max.y));
             let content = Rect::from_min_max(pos2(side.max.x, title.max.y), full.max);
@@ -370,7 +405,7 @@ impl eframe::App for App {
             }
             let inner = Rect::from_min_max(content.min + vec2(28.0, 22.0 + 10.0 * (1.0 - t)), content.max - vec2(28.0, 0.0));
             let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(inner).id_salt(("page", self.page as u8)));
-            cui.set_clip_rect(content.shrink(1.0));
+            cui.set_clip_rect(content.shrink(1.0).intersect(ui.clip_rect()));
             cui.multiply_opacity(t);
             match &self.snap {
                 None => {
@@ -401,6 +436,9 @@ impl eframe::App for App {
                 self.uac_note = uac_note(ctx, content);
             }
         });
+        if let Some(m) = &self.morph {
+            m.paint_front(ctx, ctx.screen_rect());
+        }
         resize_edges(ctx);
         if let Some(sh) = self.shot.as_mut().filter(|_| !hidden) {
             sh.tick(ctx);

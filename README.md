@@ -55,7 +55,9 @@ On the left it shows the app you're using (a game, Blender, a browser, anything)
 VRAM, CPU and GPU it takes, its helper processes included. On the right, smaller, the whole PC:
 in two rows: LOAD (CPU, GPU and RAM use, and download speed) and TEMP (how hot the CPU and GPU
 are). They turn amber or red only when something's wrong. The button at the far right opens
-Purgeon.
+Purgeon: the bar grows into the window, and the CPU, GPU, temperature and RAM numbers glide to
+their places on the Overview page while the rest of the page fades in (instant when Windows'
+animation effects are off).
 
 The bar is a normal always-on-top window that never takes focus. Nothing is added to or hooked
 into the game, so it's safe with anti-cheat, but it can't show an FPS counter, and it can't

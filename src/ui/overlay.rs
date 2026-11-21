@@ -9,18 +9,19 @@
 //! hooked onto the app below, so it is safe next to anti-cheat. It shows over borderless and
 //! windowed apps, not over exclusive fullscreen. While it is closed its window doesn't exist.
 
+use super::morph::{self, Piece};
 use super::widgets;
 use crate::anim;
 use crate::fmt;
 use crate::sys::Snapshot;
 use crate::theme::*;
-use eframe::egui::{self, pos2, vec2, Align2, Color32, Rect, Sense, Stroke, ViewportBuilder, ViewportId};
+use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, ViewportBuilder, ViewportId};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 const TITLE: &str = "Purgeon overlay";
 const W: f32 = 860.0;
-const H: f32 = 64.0;
+pub(super) const H: f32 = 64.0;
 /// Gap between the top of the screen and the bar, in points
 const TOP: f32 = 10.0;
 
@@ -28,6 +29,8 @@ static OPEN: AtomicBool = AtomicBool::new(false);
 /// The window that was in front when the overlay opened (followed while it stays open)
 static FRONT: AtomicIsize = AtomicIsize::new(0);
 static HWND: AtomicIsize = AtomicIsize::new(0);
+/// Closed by growing into the main window: the bar leaves at once instead of sliding up
+static SHUT: AtomicBool = AtomicBool::new(false);
 
 #[link(name = "user32")]
 extern "system" {
@@ -40,6 +43,7 @@ extern "system" {
     fn GetWindowLongPtrW(h: isize, i: i32) -> isize;
     fn SetWindowLongPtrW(h: isize, i: i32, v: isize) -> isize;
     fn IsWindow(h: isize) -> i32;
+    fn MonitorFromRect(r: *const [i32; 4], flags: u32) -> isize;
 }
 
 #[repr(C)]
@@ -73,6 +77,7 @@ pub fn toggle(ctx: &egui::Context) {
     let open = !OPEN.load(Ordering::Relaxed);
     if open {
         track_front();
+        SHUT.store(false, Ordering::Relaxed);
     }
     OPEN.store(open, Ordering::Relaxed);
     ctx.request_repaint();
@@ -129,6 +134,7 @@ pub fn show(ctx: &egui::Context, snap: Option<&Snapshot>) {
         if HWND.swap(0, Ordering::Relaxed) != 0 {
             crate::platform::trim_memory();
         }
+        SHUT.store(false, Ordering::Relaxed);
         return;
     }
     if open {
@@ -180,11 +186,55 @@ fn place(t: f32) {
         let scale = hh as f32 / H;
         let x = mi.monitor[0] + (mi.monitor[2] - mi.monitor[0] - w) / 2;
         let shown = mi.monitor[1] + (TOP * scale) as i32;
-        let y = shown - ((hh as f32 + TOP * scale) * (1.0 - t)) as i32;
+        let mut y = shown - ((hh as f32 + TOP * scale) * (1.0 - t)) as i32;
+        let x = if SHUT.load(Ordering::Relaxed) {
+            y = -30000;
+            -30000
+        } else {
+            x
+        };
         if x != r[0] || y != r[1] {
             // HWND_TOPMOST, SWP_NOSIZE | SWP_NOACTIVATE
             SetWindowPos(h, -1, x, y, 0, 0, 0x1 | 0x10);
         }
+    }
+}
+
+/// Dev check for the morph: draws the bar into any Ui
+pub(super) fn test_bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
+    track_front();
+    bar(ui, snap);
+}
+
+/// The overlay's window on screen (physical pixels), while it shows
+pub(super) fn bar_rect() -> Option<[i32; 4]> {
+    let h = HWND.load(Ordering::Relaxed);
+    let mut r = [0i32; 4];
+    (h != 0 && !SHUT.load(Ordering::Relaxed) && unsafe { GetWindowRect(h, &mut r) } != 0 && r[1] > -20000).then_some(r)
+}
+
+/// Where the main window is about to appear on screen (physical pixels)
+pub(super) fn main_rect() -> Option<[i32; 4]> {
+    let h = crate::platform::main_window();
+    if h == 0 {
+        return None;
+    }
+    unsafe {
+        let Some((maxed, n)) = crate::platform::coming_back() else {
+            let mut r = [0i32; 4];
+            return (GetWindowRect(h, &mut r) != 0).then_some(r);
+        };
+        // the normal rectangle is relative to the main screen's work area (the taskbar can be
+        // on the left or top)
+        let mut mi = MonitorInfo { size: std::mem::size_of::<MonitorInfo>() as u32, monitor: [0; 4], work: [0; 4], flags: 0 };
+        let primary = MonitorFromRect(&[0, 0, 1, 1], 1);
+        let (ox, oy) = if GetMonitorInfoW(primary, &mut mi) != 0 { (mi.work[0] - mi.monitor[0], mi.work[1] - mi.monitor[1]) } else { (0, 0) };
+        let r = [n[0] + ox, n[1] + oy, n[2] + ox, n[3] + oy];
+        if !maxed {
+            return Some(r);
+        }
+        // maximized: fills the work area of the screen it is on (MONITOR_DEFAULTTONEAREST)
+        (GetMonitorInfoW(MonitorFromRect(&r, 2), &mut mi) != 0).then_some(mi.work)
     }
 }
 
@@ -199,6 +249,11 @@ fn warn(level: u8) -> Color32 {
 fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
     let full = ui.max_rect();
     let p = ui.painter().clone();
+    // what is drawn is also noted down, for the morph into the main window
+    morph::record_clear();
+    let text = |key: Option<&'static str>, pos: Pos2, align: Align2, t: &str, font: FontId, col: Color32| {
+        morph::record(Piece::Text { key, text: t.to_string(), pos, align, font, col });
+    };
     let Some(s) = snap else {
         p.text(full.center(), Align2::CENTER_CENTER, "Reading the system…", reg(13.0), txt_faint());
         return;
@@ -216,9 +271,12 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
         Some(u) => {
             let ir = Rect::from_center_size(pos2(left.min.x + 14.0, cy), vec2(28.0, 28.0));
             super::icons::paint(ui.ctx(), &p, ir, &u.name, u.path.as_ref());
+            morph::record(Piece::Icon { name: u.name.clone(), path: u.path.clone(), rect: ir });
             let nx = ir.max.x + 10.0;
             p.text(pos2(nx, cy - 8.0), Align2::LEFT_CENTER, "IN FRONT", sb(9.5), txt_faint());
+            text(None, pos2(nx, cy - 8.0), Align2::LEFT_CENTER, "IN FRONT", sb(9.5), txt_faint());
             widgets::fit(&p, pos2(nx, cy + 7.0), Align2::LEFT_CENTER, &u.name, sb(14.0), 120.0, txt());
+            text(None, pos2(nx, cy + 7.0), Align2::LEFT_CENTER, &u.name, sb(14.0), txt());
             let gpu = s.gpus.iter().find(|g| g.dedicated_total > 0);
             let vram_total = gpu.map_or(0, |g| g.dedicated_total);
             let stats: [(&str, String, f32, Color32); 4] = [
@@ -234,6 +292,9 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
                 widgets::fit(&p, pos2(x, cy - 9.0), Align2::LEFT_CENTER, value, sb(15.0), cw - 12.0, txt());
                 p.text(pos2(x, cy + 9.0), Align2::LEFT_CENTER, *label, reg(10.5), txt_faint());
                 widgets::meter(&p, Rect::from_min_size(pos2(x, cy + 18.0), vec2(cw - 16.0, 2.5)), frac.clamp(0.0, 1.0), *col);
+                text(None, pos2(x, cy - 9.0), Align2::LEFT_CENTER, value, sb(15.0), txt());
+                text(None, pos2(x, cy + 9.0), Align2::LEFT_CENTER, label, reg(10.5), txt_faint());
+                morph::record(Piece::Meter { rect: Rect::from_min_size(pos2(x, cy + 18.0), vec2(cw - 16.0, 2.5)), frac: frac.clamp(0.0, 1.0), col: *col });
             }
         }
     }
@@ -266,13 +327,25 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
     let col_x = |i: usize| cols + i as f32 * cw;
     for (row, y, cells) in [("LOAD", cy - 10.0, &load[..]), ("TEMP", cy + 11.0, &heat[..])] {
         p.text(pos2(sx, y), Align2::LEFT_CENTER, row, sb(9.0), txt_faint());
+        text(None, pos2(sx, y), Align2::LEFT_CENTER, row, sb(9.0), txt_faint());
         for (i, (label, value, level)) in cells.iter().enumerate() {
             let x = col_x(i);
             let w = if i == 3 { btn.min.x - 10.0 - x } else { cw };
             let col = warn(*level);
             let lr = p.text(pos2(x, y), Align2::LEFT_CENTER, *label, reg(9.5), txt_faint());
             let vx = lr.max.x + 5.0;
-            widgets::fit(&p, pos2(vx, y), Align2::LEFT_CENTER, value, if *level > 0 { sb(12.5) } else { reg(12.5) }, w - (vx - x) - 4.0, col);
+            let font = if *level > 0 { sb(12.5) } else { reg(12.5) };
+            widgets::fit(&p, pos2(vx, y), Align2::LEFT_CENTER, value, font.clone(), w - (vx - x) - 4.0, col);
+            text(None, pos2(x, y), Align2::LEFT_CENTER, label, reg(9.5), txt_faint());
+            // the numbers the Overview page also shows fly to their places there
+            let key = match (row, *label) {
+                ("LOAD", "CPU") => Some("cpu"),
+                ("LOAD", "GPU") => Some("gpu"),
+                ("LOAD", "RAM") => Some("ram"),
+                ("TEMP", "GPU") => Some("gpu_temp"),
+                _ => None,
+            };
+            text(key.filter(|_| value != "—"), pos2(vx, y), Align2::LEFT_CENTER, value, font, col);
         }
     }
 
@@ -292,6 +365,11 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
     }
     if resp.clicked() {
         OPEN.store(false, Ordering::Relaxed);
+        // grow into the main window, rather than slide away
+        if morph::begin() {
+            SHUT.store(true, Ordering::Relaxed);
+            place(0.0);
+        }
         crate::tray::show_window();
     }
 }

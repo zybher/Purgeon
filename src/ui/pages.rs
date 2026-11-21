@@ -261,6 +261,8 @@ pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         caption(&p, r.min.x + 18.0, r.min.y + 24.0, "CPU", CPU_COL);
         let v = glide(&ctx, egui::Id::new("ov_cpu_v"), s.cpu, 10.0);
         big(&p, r.min.x + 18.0, r.min.y + 62.0, &format!("{v:.0}%"), "", 32.0);
+        // where the overlay's numbers fly to when it grows into this window
+        super::morph::mark("cpu", pos2(r.min.x + 18.0, r.min.y + 62.0), 32.0);
         let sub = format!("{} cores  ·  {} threads", s.info.physical.max(1), s.info.logical);
         widgets::fit(&p, pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, &sub, reg(12.0), r.width() - 36.0, txt_faint());
         let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 112.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
@@ -277,6 +279,7 @@ pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let used = glide(&ctx, egui::Id::new("ov_mem_v"), s.mem.used() as f32 / 1073741824.0, 10.0);
         big(&p, r.min.x + 18.0, r.min.y + 62.0, &format!("{used:.1}"), &format!("/ {} GB", fmt::gb(s.mem.total)), 32.0);
         let sub = format!("{:.0}% in use  ·  {} committed", s.mem.used_frac() * 100.0, fmt::bytes(s.mem.commit));
+        super::morph::mark("ram", pos2(r.min.x + 18.0, r.min.y + 92.0), 12.0);
         widgets::fit(&p, pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, &sub, reg(12.0), r.width() - 36.0, txt_faint());
         let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 112.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
         let series = [Series { data: &s.h_mem, col: MEM_COL, fill: true, width: 1.6 }];
@@ -295,6 +298,9 @@ pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                 let v = glide(&ctx, egui::Id::new("ov_gpu_v"), g.util, 10.0);
                 let temp = g.sensors.temp.map(|t| format!("{t:.0}°C")).unwrap_or_default();
                 big(&p, r.min.x + 18.0, r.min.y + 62.0, &format!("{v:.0}%"), &temp, 32.0);
+                super::morph::mark("gpu", pos2(r.min.x + 18.0, r.min.y + 62.0), 32.0);
+                let vw = p.layout_no_wrap(format!("{v:.0}%"), sb(32.0), txt()).size().x;
+                super::morph::mark("gpu_temp", pos2(r.min.x + 18.0 + vw + 4.0, r.min.y + 62.0 + 32.0 * 0.12), 32.0 * 0.48);
                 let sub = format!("{} / {} VRAM", fmt::bytes(g.dedicated_used), fmt::bytes(g.dedicated_total));
                 widgets::fit(&p, pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, &sub, reg(12.0), r.width() - 36.0, txt_faint());
                 let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 112.0), pos2(r.max.x - 1.0, r.max.y - 12.0));

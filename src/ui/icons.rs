@@ -63,6 +63,58 @@ extern "system" {
 extern "system" {
     fn GetDIBits(dc: isize, bm: isize, start: u32, lines: u32, bits: *mut u8, bmi: *mut BITMAPINFO, usage: u32) -> i32;
     fn DeleteObject(o: isize) -> i32;
+    fn CreateCompatibleDC(dc: isize) -> isize;
+    fn CreateCompatibleBitmap(dc: isize, w: i32, h: i32) -> isize;
+    fn SelectObject(dc: isize, o: isize) -> isize;
+    fn BitBlt(dc: isize, x: i32, y: i32, w: i32, h: i32, src: isize, sx: i32, sy: i32, rop: u32) -> i32;
+    fn DeleteDC(dc: isize) -> i32;
+}
+
+/// A copy of part of the screen as it looks now (left, top, right, bottom in physical pixels),
+/// for the overlay's morph into the main window. It is only held for the morph's half second.
+pub fn grab_screen(r: [i32; 4]) -> Option<ColorImage> {
+    let (w, h) = (r[2] - r[0], r[3] - r[1]);
+    if w <= 0 || h <= 0 || w as i64 * h as i64 > 40_000_000 {
+        return None;
+    }
+    unsafe {
+        let screen = GetDC(0);
+        if screen == 0 {
+            return None;
+        }
+        let dc = CreateCompatibleDC(screen);
+        let bm = CreateCompatibleBitmap(screen, w, h);
+        let mut out = None;
+        if dc != 0 && bm != 0 {
+            let old = SelectObject(dc, bm);
+            // SRCCOPY
+            if BitBlt(dc, 0, 0, w, h, screen, r[0], r[1], 0x00CC_0020) != 0 {
+                SelectObject(dc, old);
+                let mut bmi = BITMAPINFO {
+                    h: BITMAPINFOHEADER { biSize: 40, biWidth: w, biHeight: -h, biPlanes: 1, biBitCount: 32, ..Default::default() },
+                    colors: [0; 4],
+                };
+                let mut px = vec![0u8; (w * h * 4) as usize];
+                if GetDIBits(dc, bm, 0, h as u32, px.as_mut_ptr(), &mut bmi, 0) != 0 {
+                    for q in px.chunks_exact_mut(4) {
+                        q.swap(0, 2);
+                        q[3] = 255;
+                    }
+                    out = Some(ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px));
+                }
+            } else {
+                SelectObject(dc, old);
+            }
+        }
+        if bm != 0 {
+            DeleteObject(bm);
+        }
+        if dc != 0 {
+            DeleteDC(dc);
+        }
+        ReleaseDC(0, screen);
+        out
+    }
 }
 
 #[link(name = "shell32")]

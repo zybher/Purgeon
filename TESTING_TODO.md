@@ -25,6 +25,10 @@ and write down anything that looks wrong.
 - [ ] The RAM number for a game looks right next to the Processes page
 - [ ] With Windows' animation effects turned off, the bar appears instantly, with no slide
 - [ ] The bar is easy to read at a glance on the ultrawide. If the text feels too small, say so and it can get a size setting (125%, 150%) or scale up on wide screens by itself
+- [ ] Click the expand button: the bar should grow into the full window, the CPU, GPU, temperature and RAM numbers glide to their spots on the Overview page, and the page fades in. Try it with Purgeon maximized, not maximized, and closed to the tray
+- [ ] During that, look for a single-frame flash of the old window before the bar starts growing. If you see one, say so
+- [ ] With the bar on one screen and Purgeon on another, it should still look reasonable (the bar starts from the nearest edge of the window)
+- [ ] With Windows' animation effects off, the expand button just opens the window, with no morph
 - [ ] The System side's two rows read clearly: LOAD (how busy CPU, GPU, RAM are, plus download speed) and TEMP (how hot). CPU temperature shows "—" on purpose, since reading it needs a driver
 
 ## Boost an app (Overview page)

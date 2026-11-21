@@ -70,6 +70,8 @@ extern "system" {
     fn SetWindowPlacement(h: isize, p: *const Placement) -> i32;
     fn GetWindowLongPtrW(h: isize, i: i32) -> isize;
     fn SetWindowLongPtrW(h: isize, i: i32, v: isize) -> isize;
+    fn IsIconic(h: isize) -> i32;
+    fn ClientToScreen(h: isize, p: *mut [i32; 2]) -> i32;
 }
 
 /// Where the window was and its extended style, while it sits in the tray
@@ -120,13 +122,42 @@ pub fn show_window() {
             // back maximized if it was, otherwise normal (also when it was minimized)
             p.show = if p.show == 3 { 3 } else { 1 };
             SetWindowPlacement(h, &p);
-        } else {
-            // SW_RESTORE: e.g. minimized and Purgeon was started again
+        } else if IsIconic(h) != 0 {
+            // SW_RESTORE: e.g. minimized and Purgeon was started again (only when minimized: a
+            // maximized window would be un-maximized by it)
             ShowWindow(h, 9);
         }
         // allowed here: the user just clicked our icon (or started Purgeon again)
         SetForegroundWindow(h);
     }
+}
+
+/// Where the main window will come back to when it is in the tray or minimized: whether it
+/// will be maximized, and its normal rectangle (in workspace coordinates). None when it is
+/// already on screen.
+pub fn coming_back() -> Option<(bool, [i32; 4])> {
+    let h = main_window();
+    if h == 0 {
+        return None;
+    }
+    if let Some((p, _)) = *PARKED.lock().unwrap_or_else(|e| e.into_inner()) {
+        return Some((p.show == 3, p.normal));
+    }
+    unsafe {
+        if IsIconic(h) == 0 {
+            return None;
+        }
+        let mut p = Placement { length: std::mem::size_of::<Placement>() as u32, ..Default::default() };
+        // WPF_RESTORETOMAXIMIZED
+        (GetWindowPlacement(h, &mut p) != 0).then_some((p.flags & 2 != 0, p.normal))
+    }
+}
+
+/// Screen position of the main window's client area (physical pixels)
+pub fn client_origin() -> Option<(i32, i32)> {
+    let h = main_window();
+    let mut pt = [0i32; 2];
+    (h != 0 && unsafe { ClientToScreen(h, &mut pt) } != 0).then_some((pt[0], pt[1]))
 }
 
 /// Rounds the borderless window's corners (Windows 11), gives it a dark border and dark
