@@ -103,8 +103,8 @@ fn usage(s: &Snapshot, pid: u32) -> Option<Usage> {
             break;
         }
     }
-    let base = me.name.trim_end_matches(".exe").trim_end_matches(".EXE");
-    // "chrome" reads better as "Chrome"
+    // The app's own name for itself, else the file name ("chrome" reads better as "Chrome")
+    let base = me.path.as_deref().and_then(crate::platform::app_name).unwrap_or_else(|| me.name.trim_end_matches(".exe").trim_end_matches(".EXE").to_string());
     let name = base.chars().take(1).flat_map(char::to_uppercase).chain(base.chars().skip(1)).collect();
     let mut u = Usage { name, path: me.path.clone(), ram: 0, vram: 0, cpu: 0.0, gpu: 0.0 };
     let mut shared = 0;

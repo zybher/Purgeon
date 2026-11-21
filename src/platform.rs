@@ -150,6 +150,64 @@ pub fn style_window() -> bool {
     true
 }
 
+#[link(name = "version")]
+extern "system" {
+    fn GetFileVersionInfoSizeW(file: *const u16, handle: *mut u32) -> u32;
+    fn GetFileVersionInfoW(file: *const u16, handle: u32, len: u32, data: *mut u8) -> i32;
+    fn VerQueryValueW(block: *const u8, sub: *const u16, out: *mut *const u16, len: *mut u32) -> i32;
+}
+
+/// The name an app gives itself inside its .exe ("Roblox", "Google Chrome", "Blender"), read
+/// from the file on disk (never from the running process). None when it has no usable one.
+pub fn app_name(path: &str) -> Option<String> {
+    use std::collections::HashMap;
+    static CACHE: std::sync::Mutex<Option<HashMap<String, Option<String>>>> = std::sync::Mutex::new(None);
+    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let c = c.get_or_insert_with(HashMap::new);
+    if let Some(n) = c.get(path) {
+        return n.clone();
+    }
+    let n = read_app_name(path);
+    c.insert(path.to_string(), n.clone());
+    n
+}
+
+fn read_app_name(path: &str) -> Option<String> {
+    let file = win::wide(path);
+    unsafe {
+        let mut h = 0;
+        let size = GetFileVersionInfoSizeW(file.as_ptr(), &mut h);
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        if GetFileVersionInfoW(file.as_ptr(), 0, size, data.as_mut_ptr()) == 0 {
+            return None;
+        }
+        let query = |sub: &str| -> Option<String> {
+            let (mut p, mut n) = (std::ptr::null(), 0u32);
+            if VerQueryValueW(data.as_ptr(), win::wide(sub).as_ptr(), &mut p, &mut n) == 0 || p.is_null() || n == 0 {
+                return None;
+            }
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, n as usize));
+            let s = s.trim_end_matches('\0').trim().to_string();
+            (!s.is_empty()).then_some(s)
+        };
+        // the file's own language first, then the usual English ones
+        let mut langs = vec![];
+        let (mut p, mut n) = (std::ptr::null::<u16>(), 0u32);
+        if VerQueryValueW(data.as_ptr(), win::wide("\\VarFileInfo\\Translation").as_ptr(), &mut p, &mut n) != 0 && n >= 4 {
+            langs.push(format!("{:04x}{:04x}", *p, *p.add(1)));
+        }
+        langs.extend(["040904b0".to_string(), "040904e4".to_string()]);
+        let get = |key: &str| langs.iter().find_map(|l| query(&format!("\\StringFileInfo\\{l}\\{key}")));
+        // The product name is the friendliest ("Roblox" rather than "Roblox Game Client"), but
+        // Windows' own programs all share one long product name; their description is better
+        let product = get("ProductName").filter(|s| s.chars().count() <= 24 && !s.contains('®') && !s.contains("(R)"));
+        product.or_else(|| get("FileDescription").filter(|s| s.chars().count() <= 32))
+    }
+}
+
 /// Dark rounded corners and border for a small borderless window such as the overlay
 pub fn style_popup(h: isize) {
     unsafe {
