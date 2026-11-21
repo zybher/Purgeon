@@ -89,7 +89,9 @@ and write down anything that looks wrong.
 - [ ] Elevate works while Purgeon is in tray mode: only one tray icon afterwards, and the menu still works
 
 ## Look and feel
-- [ ] Dashboard: the top card shows the five apps holding the most memory as tiles, biggest first, all in GB (the bars are sized against the biggest). Hover a tile to see the exe name and how many processes it has
+- [ ] Dashboard: CPU, Memory, Disk and GPU cards sit in one row at the top; the Disk card shows the busiest disk's active time with its read and write speeds
+- [ ] Click a card: it gets an outline, its arrow turns down, and a panel opens below with a bigger graph and the numbers behind it. Click it again (or another card) to close or switch. "Open full page" goes to that page
+- [ ] Dashboard: the "busy apps" card now sits under the four cards and shows the five apps holding the most memory as tiles, biggest first, all in GB (the bars are sized against the biggest). Hover a tile to see the exe name and how many processes it has
 - [ ] Hovering the Boost and Free up memory cards shows the longer explanation that used to be written out on the card
 - [ ] Processes page: when the order changes, the row slide feels neither too fast nor too slow
 

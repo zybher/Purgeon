@@ -239,86 +239,167 @@ fn summary(ui: &mut Ui, s: &Snapshot, w: f32) {
     resp.on_hover_text("The five programs holding the most memory, all their processes counted together. The Processes page shows everything.");
 }
 
+/// The four cards at the top of the dashboard; one at a time can be opened for more detail
+#[derive(Clone, Copy, PartialEq)]
+enum Part {
+    Cpu,
+    Mem,
+    Disk,
+    Gpu,
+}
+
+/// The disk to show on the dashboard: the one that worked hardest over the graph's span (so
+/// the card doesn't hop between disks from one second to the next)
+fn busiest_disk(s: &Snapshot) -> Option<usize> {
+    let load = |i: usize| s.h_disk.get(i).map_or(0.0, |h| h[0].iter().sum::<f32>());
+    (0..s.disks.len()).max_by(|&a, &b| load(a).total_cmp(&load(b)))
+}
+
+/// What a disk reading means, for tooltips
+fn disk_note(active: f32) -> String {
+    if active < 50.0 {
+        format!("{active:.0}% active. Normal: the disk has time to spare.")
+    } else if active < 90.0 {
+        format!("{active:.0}% active. Busy (an install, an update, a game loading). Fine for a while.")
+    } else {
+        format!("{active:.0}% active. The disk is the bottleneck: programs wait for it. The Disk page shows what is reading and writing.")
+    }
+}
+
+/// A small chevron: pointing down when the card is open, right when it can be opened
+fn chevron(p: &Painter, c: egui::Pos2, open: f32, col: Color32) {
+    let a = open * std::f32::consts::FRAC_PI_2;
+    let rot = |x: f32, y: f32| pos2(c.x + x * a.cos() - y * a.sin(), c.y + x * a.sin() + y * a.cos());
+    let s = Stroke::new(1.6_f32, col);
+    p.line_segment([rot(-2.5, -4.5), rot(2.0, 0.0)], s);
+    p.line_segment([rot(2.0, 0.0), rot(-2.5, 4.5)], s);
+}
+
 pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     let mut go = None;
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         let w = ui.available_width();
-        header(ui, "Dashboard", &format!("{}  ·  up {}", s.info.cpu_name, fmt::uptime(s.uptime)));
-        summary(ui, s, w);
-        ui.add_space(GAP);
-        let (row, _) = ui.allocate_exact_size(vec2(w, 236.0), Sense::hover());
-        let cw = (w - GAP * 2.0) / 3.0;
-        let rect = |i: usize| Rect::from_min_size(pos2(row.min.x + i as f32 * (cw + GAP), row.min.y), vec2(cw, row.height()));
         let ctx = ui.ctx().clone();
-        let hov = |ui: &Ui, r: Rect| hover_in(ui, r);
+        header(ui, "Dashboard", &format!("{}  ·  up {}", s.info.cpu_name, fmt::uptime(s.uptime)));
 
-        // CPU
-        let (resp, r) = widgets::card_button(ui, rect(0), egui::Id::new("ov_cpu"));
+        // ---- CPU, Memory, Disk, GPU: click one to open its details below the row ------------
+        let open_id = egui::Id::new("dash_open");
+        let saved = ctx.data(|d| d.get_temp::<Option<Part>>(open_id));
+        // dev captures can start with a card open: PURGEON_DASH_OPEN=cpu|mem|disk|gpu
+        let start = || match std::env::var("PURGEON_DASH_OPEN").ok()?.as_str() {
+            "cpu" => Some(Part::Cpu),
+            "mem" => Some(Part::Mem),
+            "disk" => Some(Part::Disk),
+            "gpu" => Some(Part::Gpu),
+            _ => None,
+        };
+        let mut open: Option<Part> = saved.unwrap_or_else(start);
+        let (row, _) = ui.allocate_exact_size(vec2(w, 200.0), Sense::hover());
+        let cw = (w - GAP * 3.0) / 4.0;
+        let rect = |i: usize| Rect::from_min_size(pos2(row.min.x + i as f32 * (cw + GAP), row.min.y), vec2(cw, row.height()));
         let p = ui.painter().clone();
-        caption(&p, r.min.x + 18.0, r.min.y + 24.0, "CPU", CPU_COL);
-        let v = glide(&ctx, egui::Id::new("ov_cpu_v"), s.cpu, 10.0);
-        big(&p, r.min.x + 18.0, r.min.y + 62.0, &format!("{v:.0}%"), "", 32.0);
-        // where the overlay's numbers fly to when it grows into this window
-        super::morph::mark("cpu", pos2(r.min.x + 18.0, r.min.y + 62.0), 32.0);
-        let sub = format!("{} cores  ·  {} threads", s.info.physical.max(1), s.info.logical);
-        widgets::fit(&p, pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, &sub, reg(12.0), r.width() - 36.0, txt_faint());
-        let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 112.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
-        let series = [Series { data: &s.h_cpu, col: CPU_COL, fill: true, width: 1.6 }];
-        graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hov(ui, gr), interval: s.interval, label: &pct_label });
-        if resp.clicked() {
-            go = Some(Page::Cpu);
-        }
-        resp.on_hover_text(cpu_note(s.cpu));
-
-        // Memory
-        let (resp, r) = widgets::card_button(ui, rect(1), egui::Id::new("ov_mem"));
-        caption(&p, r.min.x + 18.0, r.min.y + 24.0, "Memory", MEM_COL);
-        let used = glide(&ctx, egui::Id::new("ov_mem_v"), s.mem.used() as f32 / 1073741824.0, 10.0);
-        big(&p, r.min.x + 18.0, r.min.y + 62.0, &format!("{used:.1}"), &format!("/ {} GB", fmt::gb(s.mem.total)), 32.0);
-        let sub = format!("{:.0}% in use  ·  {} committed", s.mem.used_frac() * 100.0, fmt::bytes(s.mem.commit));
-        super::morph::mark("ram", pos2(r.min.x + 18.0, r.min.y + 92.0), 12.0);
-        widgets::fit(&p, pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, &sub, reg(12.0), r.width() - 36.0, txt_faint());
-        let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 112.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
-        let series = [Series { data: &s.h_mem, col: MEM_COL, fill: true, width: 1.6 }];
-        graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hov(ui, gr), interval: s.interval, label: &pct_label });
-        if resp.clicked() {
-            go = Some(Page::Memory);
-        }
-        resp.on_hover_text(mem_note(s.mem.used_frac()));
-
-        // GPU (the main adapter)
-        let (resp, r) = widgets::card_button(ui, rect(2), egui::Id::new("ov_gpu"));
-        caption(&p, r.min.x + 18.0, r.min.y + 24.0, "GPU", GPU_COL);
-        match main_gpu(s) {
-            Some(i) => {
-                let g = &s.gpus[i];
-                let v = glide(&ctx, egui::Id::new("ov_gpu_v"), g.util, 10.0);
-                let temp = g.sensors.temp.map(|t| format!("{t:.0}°C")).unwrap_or_default();
-                big(&p, r.min.x + 18.0, r.min.y + 62.0, &format!("{v:.0}%"), &temp, 32.0);
-                super::morph::mark("gpu", pos2(r.min.x + 18.0, r.min.y + 62.0), 32.0);
-                let vw = p.layout_no_wrap(format!("{v:.0}%"), sb(32.0), txt()).size().x;
-                super::morph::mark("gpu_temp", pos2(r.min.x + 18.0 + vw + 4.0, r.min.y + 62.0 + 32.0 * 0.12), 32.0 * 0.48);
-                let sub = format!("{} / {} VRAM", fmt::bytes(g.dedicated_used), fmt::bytes(g.dedicated_total));
-                widgets::fit(&p, pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, &sub, reg(12.0), r.width() - 36.0, txt_faint());
-                let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 112.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
-                let series = [
-                    Series { data: &s.h_gpu[i], col: GPU_COL, fill: true, width: 1.6 },
-                    Series { data: &s.h_vram[i], col: VRAM_COL, fill: false, width: 1.1 },
-                ];
-                graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hov(ui, gr), interval: s.interval, label: &pct_label });
+        let disk = busiest_disk(s);
+        let gpu = main_gpu(s);
+        let parts = [(Part::Cpu, "CPU", CPU_COL, "ov_cpu"), (Part::Mem, "Memory", MEM_COL, "ov_mem"), (Part::Disk, "Disk", DISK_COL, "ov_disk"), (Part::Gpu, "GPU", GPU_COL, "ov_gpu")];
+        for (i, &(part, title, col, key)) in parts.iter().enumerate() {
+            let id = egui::Id::new(key);
+            let (resp, r) = widgets::card_button(ui, rect(i), id);
+            let is_open = open == Some(part);
+            let o = ease(&ctx, id.with("open"), is_open);
+            if o > 0.01 {
+                p.rect_stroke(r, widgets::R_CARD, Stroke::new(1.5_f32, col.gamma_multiply(o)));
             }
-            None => {
-                big(&p, r.min.x + 18.0, r.min.y + 62.0, "—", "", 32.0);
-                p.text(pos2(r.min.x + 18.0, r.min.y + 92.0), Align2::LEFT_CENTER, "No GPU counters found", reg(12.0), txt_faint());
+            chevron(&p, pos2(r.max.x - 20.0, r.min.y + 24.0), o, txt_faint());
+            caption(&p, r.min.x + 18.0, r.min.y + 24.0, title, col);
+            let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 104.0), pos2(r.max.x - 1.0, r.max.y - 10.0));
+            let (x, vy, sy) = (r.min.x + 18.0, r.min.y + 58.0, r.min.y + 86.0);
+            let sub_w = r.width() - 36.0;
+            let note = match part {
+                Part::Cpu => {
+                    let v = glide(&ctx, egui::Id::new("ov_cpu_v"), s.cpu, 10.0);
+                    big(&p, x, vy, &format!("{v:.0}%"), "", 30.0);
+                    // where the overlay's numbers fly to when it grows into this window
+                    super::morph::mark("cpu", pos2(x, vy), 30.0);
+                    let speed = if s.clocks.avg_mhz > 0.0 { format!("  ·  {:.2} GHz", s.clocks.avg_mhz / 1000.0) } else { String::new() };
+                    let sub = format!("{} cores{speed}", s.info.physical.max(1));
+                    widgets::fit(&p, pos2(x, sy), Align2::LEFT_CENTER, &sub, reg(12.0), sub_w, txt_faint());
+                    let series = [Series { data: &s.h_cpu, col: CPU_COL, fill: true, width: 1.6 }];
+                    graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
+                    cpu_note(s.cpu)
+                }
+                Part::Mem => {
+                    let used = glide(&ctx, egui::Id::new("ov_mem_v"), s.mem.used() as f32 / 1073741824.0, 10.0);
+                    big(&p, x, vy, &format!("{used:.1}"), &format!("/ {} GB", fmt::gb(s.mem.total)), 30.0);
+                    let sub = format!("{:.0}% in use", s.mem.used_frac() * 100.0);
+                    super::morph::mark("ram", pos2(x, sy), 12.0);
+                    widgets::fit(&p, pos2(x, sy), Align2::LEFT_CENTER, &sub, reg(12.0), sub_w, txt_faint());
+                    let series = [Series { data: &s.h_mem, col: MEM_COL, fill: true, width: 1.6 }];
+                    graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
+                    mem_note(s.mem.used_frac())
+                }
+                Part::Disk => match disk {
+                    Some(di) => {
+                        let d = &s.disks[di];
+                        let v = glide(&ctx, egui::Id::new("ov_disk_v"), d.active, 10.0);
+                        big(&p, x, vy, &format!("{v:.0}%"), "active", 30.0);
+                        let name = if d.letters.is_empty() { format!("Disk {}", d.index) } else { d.letters.join(" ") };
+                        let sub = format!("{name}  ·  {} read  ·  {} write", fmt::rate(d.read), fmt::rate(d.write));
+                        widgets::fit(&p, pos2(x, sy), Align2::LEFT_CENTER, &sub, reg(12.0), sub_w, txt_faint());
+                        let series = [Series { data: &s.h_disk[di][0], col: DISK_COL, fill: true, width: 1.6 }];
+                        graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
+                        disk_note(d.active)
+                    }
+                    None => {
+                        big(&p, x, vy, "—", "", 30.0);
+                        p.text(pos2(x, sy), Align2::LEFT_CENTER, "No disk counters found", reg(12.0), txt_faint());
+                        String::new()
+                    }
+                },
+                Part::Gpu => match gpu {
+                    Some(gi) => {
+                        let g = &s.gpus[gi];
+                        let v = glide(&ctx, egui::Id::new("ov_gpu_v"), g.util, 10.0);
+                        let temp = g.sensors.temp.map(|t| format!("{t:.0}°C")).unwrap_or_default();
+                        big(&p, x, vy, &format!("{v:.0}%"), &temp, 30.0);
+                        super::morph::mark("gpu", pos2(x, vy), 30.0);
+                        let vw = p.layout_no_wrap(format!("{v:.0}%"), sb(30.0), txt()).size().x;
+                        super::morph::mark("gpu_temp", pos2(x + vw + 4.0, vy + 30.0 * 0.12), 30.0 * 0.48);
+                        let sub = format!("{} / {} VRAM", fmt::bytes(g.dedicated_used), fmt::bytes(g.dedicated_total));
+                        widgets::fit(&p, pos2(x, sy), Align2::LEFT_CENTER, &sub, reg(12.0), sub_w, txt_faint());
+                        let series = [
+                            Series { data: &s.h_gpu[gi], col: GPU_COL, fill: true, width: 1.6 },
+                            Series { data: &s.h_vram[gi], col: VRAM_COL, fill: false, width: 1.1 },
+                        ];
+                        graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
+                        gpu_note(g.util, g.dedicated_used as f32 / g.dedicated_total.max(1) as f32)
+                    }
+                    None => {
+                        big(&p, x, vy, "—", "", 30.0);
+                        p.text(pos2(x, sy), Align2::LEFT_CENTER, "No GPU counters found", reg(12.0), txt_faint());
+                        String::new()
+                    }
+                },
+            };
+            if resp.clicked() {
+                open = if is_open { None } else { Some(part) };
+            }
+            if !note.is_empty() {
+                resp.on_hover_text(format!("{note}\n\nClick for details."));
             }
         }
-        if resp.clicked() {
-            go = Some(Page::Gpu);
-        }
-        if let Some(g) = main_gpu(s).map(|i| &s.gpus[i]) {
-            resp.on_hover_text(gpu_note(g.util, g.dedicated_used as f32 / g.dedicated_total.max(1) as f32));
+        ctx.data_mut(|d| d.insert_temp(open_id, open));
+
+        // ---- the opened card's details --------------------------------------------------------
+        if let Some(part) = open {
+            ui.add_space(GAP);
+            if let Some(page) = details(ui, s, part, w, scroll) {
+                go = Some(page);
+            }
         }
 
+        // ---- what is using the PC ---------------------------------------------------------------
+        ui.add_space(GAP);
+        summary(ui, s, w);
         ui.add_space(GAP);
         super::tools::cards(ui, w, GAP);
         ui.add_space(GAP);
@@ -335,6 +416,142 @@ pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         top_list(ui, Rect::from_min_size(pos2(row.min.x + hw + GAP, row.min.y), vec2(hw, row.height())), "Top memory", MEM_COL, &rows);
         ui.add_space(GAP);
     });
+    go
+}
+
+/// The opened card's panel: a bigger graph with its scale, the numbers behind the card, and
+/// a link to the full page
+fn details(ui: &mut Ui, s: &Snapshot, part: Part, w: f32, scroll: f32) -> Option<Page> {
+    let dash = || "—".to_string();
+    let gb = |b: u64| format!("{:.1} GB", b as f64 / 1073741824.0);
+    let (title, col, page, tiles): (String, Color32, Page, Vec<(String, String)>) = match part {
+        Part::Cpu => {
+            let speed = if s.clocks.avg_mhz > 0.0 { format!("{:.2} GHz", s.clocks.avg_mhz / 1000.0) } else { dash() };
+            let base = if s.info.base_mhz > 0 { format!("{:.2} GHz", s.info.base_mhz as f32 / 1000.0) } else { dash() };
+            (
+                s.info.cpu_name.clone(),
+                CPU_COL,
+                Page::Cpu,
+                vec![
+                    ("Utilization".into(), format!("{:.1}%", s.cpu)),
+                    ("Speed".into(), speed),
+                    ("Base speed".into(), base),
+                    ("Kernel time".into(), format!("{:.1}%", s.kernel)),
+                    ("Cores / threads".into(), format!("{} / {}", s.info.physical.max(1), s.info.logical)),
+                    ("Processes".into(), fmt::thousands(s.nprocs as u64)),
+                    ("Threads".into(), fmt::thousands(s.threads as u64)),
+                    ("Handles".into(), fmt::thousands(s.handles as u64)),
+                ],
+            )
+        }
+        Part::Mem => {
+            let m = &s.mem;
+            let mut t = vec![
+                ("In use".into(), format!("{}  ({:.0}%)", gb(m.used()), m.used_frac() * 100.0)),
+                ("Available".into(), gb(m.avail)),
+                ("Committed".into(), format!("{} / {}", gb(m.commit), gb(m.commit_limit))),
+                ("Cached".into(), gb(m.cache)),
+                ("Paged pool".into(), fmt::bytes(m.paged)),
+                ("Non-paged pool".into(), fmt::bytes(m.nonpaged)),
+            ];
+            if let Some(l) = &m.lists {
+                t.push(("Standby".into(), gb(l.standby)));
+                t.push(("Modified".into(), fmt::bytes(l.modified)));
+            }
+            (format!("{} GB installed", fmt::gb(m.total)), MEM_COL, Page::Memory, t)
+        }
+        Part::Disk => {
+            let mut t = Vec::new();
+            for d in &s.disks {
+                let name = if d.letters.is_empty() { format!("Disk {}", d.index) } else { format!("Disk {} ({})", d.index, d.letters.join(" ")) };
+                t.push((name, format!("{:.0}%  ·  {:.1} ms", d.active, d.resp_ms)));
+                t.push(("Read / write".into(), format!("{}  /  {}", fmt::rate(d.read), fmt::rate(d.write))));
+            }
+            (if s.disks.len() == 1 { "1 physical disk".to_string() } else { format!("{} physical disks", s.disks.len()) }, DISK_COL, Page::Disk, t)
+        }
+        Part::Gpu => {
+            let Some(g) = main_gpu(s).map(|i| &s.gpus[i]) else { return None };
+            let sn = &g.sensors;
+            (
+                g.name.clone(),
+                GPU_COL,
+                Page::Gpu,
+                vec![
+                    ("Utilization".into(), format!("{:.0}%", g.util)),
+                    ("Temperature".into(), sn.temp.map_or_else(dash, |t| format!("{t:.0}°C"))),
+                    ("Dedicated memory".into(), format!("{} / {}", fmt::bytes(g.dedicated_used), fmt::bytes(g.dedicated_total))),
+                    ("Shared memory".into(), format!("{} / {}", fmt::bytes(g.shared_used), fmt::bytes(g.shared_total))),
+                    ("Core clock".into(), sn.core_mhz.map_or_else(dash, |m| format!("{m} MHz"))),
+                    ("Memory clock".into(), sn.mem_mhz.map_or_else(dash, |m| format!("{m} MHz"))),
+                    ("Power".into(), sn.power_w.map_or_else(dash, |p| format!("{p:.0} W"))),
+                    ("Fan".into(), sn.fan_pct.map_or_else(dash, |f| format!("{f}%"))),
+                ],
+            )
+        }
+    };
+
+    let pad = 18.0;
+    let graph_h = 170.0;
+    let (_, tiles_h) = widgets::tile_grid(pos2(0.0, 0.0), w - pad * 2.0, tiles.len(), 150.0, 64.0, 12.0);
+    let (r, _) = ui.allocate_exact_size(vec2(w, 44.0 + graph_h + 14.0 + tiles_h + pad), Sense::hover());
+    let p = ui.painter().clone();
+    widgets::card(&p, r, card());
+    caption_w(&p, r.min.x + pad, r.min.y + 24.0, &title, col, r.width() - 200.0);
+
+    // "Open the full page"
+    let link = p.layout_no_wrap("Open full page".to_string(), sb(12.0), ACCENT);
+    let lr = Rect::from_min_size(pos2(r.max.x - pad - link.size().x - 14.0, r.min.y + 14.0), vec2(link.size().x + 14.0, 22.0));
+    let resp = ui.interact(lr, egui::Id::new("dash_more"), Sense::click());
+    if resp.hovered() {
+        p.rect_filled(lr, 6.0, wa(10));
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    p.galley(pos2(lr.min.x + 7.0, lr.center().y - link.size().y / 2.0), link, ACCENT);
+    let go = resp.clicked().then_some(page);
+
+    // the graph, with its scale this time
+    let gr = Rect::from_min_size(pos2(r.min.x + pad, r.min.y + 44.0), vec2(w - pad * 2.0, graph_h));
+    p.rect_filled(gr, 8.0, well());
+    let hover = hover_in(ui, gr);
+    match part {
+        Part::Cpu => {
+            let series = [
+                Series { data: &s.h_cpu, col: CPU_COL, fill: true, width: 1.8 },
+                Series { data: &s.h_kernel, col: KERNEL_COL, fill: false, width: 1.2 },
+            ];
+            graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: true, hover, interval: s.interval, label: &pct_label });
+        }
+        Part::Mem => {
+            let series = [
+                Series { data: &s.h_mem, col: MEM_COL, fill: true, width: 1.8 },
+                Series { data: &s.h_commit, col: txt_faint(), fill: false, width: 1.1 },
+            ];
+            graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: true, hover, interval: s.interval, label: &pct_label });
+        }
+        Part::Disk => {
+            let series: Vec<Series> = s
+                .h_disk
+                .iter()
+                .enumerate()
+                .map(|(i, h)| Series { data: &h[0], col: if Some(i) == busiest_disk(s) { DISK_COL } else { DISK_COL.gamma_multiply(0.45) }, fill: Some(i) == busiest_disk(s), width: 1.4 })
+                .collect();
+            graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: true, hover, interval: s.interval, label: &pct_label });
+        }
+        Part::Gpu => {
+            if let Some(i) = main_gpu(s) {
+                let series = [
+                    Series { data: &s.h_gpu[i], col: GPU_COL, fill: true, width: 1.8 },
+                    Series { data: &s.h_vram[i], col: VRAM_COL, fill: false, width: 1.2 },
+                ];
+                graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: true, hover, interval: s.interval, label: &pct_label });
+            }
+        }
+    }
+
+    let (rects, _) = widgets::tile_grid(pos2(r.min.x + pad, gr.max.y + 14.0), w - pad * 2.0, tiles.len(), 150.0, 64.0, 12.0);
+    for (tr, (c, v)) in rects.iter().zip(&tiles) {
+        widgets::tile(&p, *tr, c, v, None);
+    }
     go
 }
 
