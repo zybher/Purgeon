@@ -190,27 +190,11 @@ fn gpu_note(util: f32, vram_frac: f32) -> String {
 fn summary(ui: &mut Ui, s: &Snapshot, w: f32) {
     let groups = grouped(s);
     let total = s.mem.total.max(1) as f32;
-    let vram_total = s.gpus.iter().map(|g| g.dedicated_total).max().unwrap_or(0).max(1) as f32;
-    // each program's heaviest use of one resource, as a share of the whole machine:
-    // (program, share, big value, what it is a share of, colour)
-    let mut hogs: Vec<(&Group, f32, String, String, Color32)> = groups
-        .iter()
-        .filter_map(|g| {
-            let c = g.cpu / 100.0;
-            let m = g.mem as f32 / total;
-            let v = if s.gpu_proc { g.vram as f32 / vram_total } else { 0.0 };
-            let hog = if c >= m && c >= v {
-                (g, c, format!("{:.0}%", g.cpu), "of CPU".to_string(), CPU_COL)
-            } else if m >= v {
-                (g, m, fmt::bytes(g.mem), format!("{:.0}% of RAM", m * 100.0), MEM_COL)
-            } else {
-                (g, v, fmt::bytes(g.vram), format!("{:.0}% of VRAM", v * 100.0), VRAM_COL)
-            };
-            (hog.1 >= 0.03).then_some(hog)
-        })
-        .collect();
-    hogs.sort_by(|a, b| b.1.total_cmp(&a.1));
+    // the programs holding the most memory, biggest first, all in the same unit
+    let mut hogs: Vec<&Group> = groups.iter().filter(|g| g.mem as f32 / total >= 0.01).collect();
+    hogs.sort_by(|a, b| b.mem.cmp(&a.mem));
     hogs.truncate(5);
+    let biggest = hogs.first().map_or(1, |g| g.mem.max(1)) as f32;
 
     let mf = s.mem.used_frac();
     let (head, col) = if s.cpu > 85.0 {
@@ -231,25 +215,28 @@ fn summary(ui: &mut Ui, s: &Snapshot, w: f32) {
     if hogs.is_empty() {
         p.text(pos2(r.min.x + 34.0, r.min.y + 56.0), Align2::LEFT_CENTER, "Nothing is using much right now", reg(12.5), txt_faint());
     } else {
-        p.text(pos2(hr.max.x + 10.0, r.min.y + 26.5), Align2::LEFT_CENTER, "Top apps", reg(12.0), txt_faint());
+        p.text(pos2(hr.max.x + 10.0, r.min.y + 26.5), Align2::LEFT_CENTER, "Using the most memory", reg(12.0), txt_faint());
     }
-    // one tile per program: what it uses most, and how much of the PC that is
+    // one tile per program; the bars are sized against the biggest, so the ranking reads at a glance
     let (gap, slots) = (10.0, 5.0);
     let tw = (r.width() - 36.0 - gap * (slots - 1.0)) / slots;
-    for (i, (g, share, value, of, c)) in hogs.iter().enumerate() {
+    for (i, g) in hogs.iter().enumerate() {
+        let value = format!("{:.2} GB", g.mem as f64 / 1073741824.0);
+        let of = format!("{:.0}% of RAM", g.mem as f32 / total * 100.0);
+        let share = g.mem as f32 / biggest;
         let t = Rect::from_min_size(pos2(r.min.x + 18.0 + i as f32 * (tw + gap), r.min.y + 48.0), vec2(tw, 76.0));
         p.rect_filled(t, 10.0, well());
         super::icons::paint(ui.ctx(), &p, Rect::from_center_size(pos2(t.min.x + 21.0, t.min.y + 20.0), vec2(18.0, 18.0)), &g.name, g.path.as_ref());
         let base = g.name.trim_end_matches(".exe").trim_end_matches(".EXE");
         let name = crate::platform::friendly_name(base, g.path.as_deref());
         widgets::fit(&p, pos2(t.min.x + 36.0, t.min.y + 20.0), Align2::LEFT_CENTER, &name, sb(12.5), tw - 46.0, txt());
-        let vr = p.text(pos2(t.min.x + 12.0, t.min.y + 46.0), Align2::LEFT_CENTER, value, sb(17.0), txt());
-        widgets::fit(&p, pos2(vr.max.x + 6.0, t.min.y + 47.5), Align2::LEFT_CENTER, of, reg(11.0), t.max.x - 10.0 - (vr.max.x + 6.0), txt_faint());
-        widgets::meter(&p, Rect::from_min_size(pos2(t.min.x + 12.0, t.min.y + 63.0), vec2(tw - 24.0, 3.0)), share.clamp(0.0, 1.0), *c);
+        let vr = p.text(pos2(t.min.x + 12.0, t.min.y + 46.0), Align2::LEFT_CENTER, &value, sb(17.0), txt());
+        widgets::fit(&p, pos2(vr.max.x + 6.0, t.min.y + 47.5), Align2::LEFT_CENTER, &of, reg(11.0), t.max.x - 10.0 - (vr.max.x + 6.0), txt_faint());
+        widgets::meter(&p, Rect::from_min_size(pos2(t.min.x + 12.0, t.min.y + 63.0), vec2(tw - 24.0, 3.0)), share.clamp(0.0, 1.0), MEM_COL);
         let procs = if g.count > 1 { format!("{} processes", g.count) } else { "1 process".into() };
         ui.interact(t, egui::Id::new(("top_app", i)), Sense::hover()).on_hover_text(format!("{}  ·  {procs}", g.name));
     }
-    resp.on_hover_text("Programs using at least 3% of the CPU, memory or video memory, with the one they use most of.");
+    resp.on_hover_text("The five programs holding the most memory, all their processes counted together. The Processes page shows everything.");
 }
 
 pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {

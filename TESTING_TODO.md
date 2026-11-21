@@ -56,7 +56,7 @@ and write down anything that looks wrong.
 - [ ] Elevate works while Purgeon is in tray mode: only one tray icon afterwards, and the menu still works
 
 ## Look and feel
-- [ ] Overview page: the top card shows the busiest apps as tiles (name, amount, a bar for its share). Hover a tile to see the exe name and how many processes it has
+- [ ] Overview page: the top card shows the five apps holding the most memory as tiles, biggest first, all in GB (the bars are sized against the biggest). Hover a tile to see the exe name and how many processes it has
 - [ ] Hovering the Boost and Free up memory cards shows the longer explanation that used to be written out on the card
 - [ ] Processes page: when the order changes, the row slide feels neither too fast nor too slow
 
