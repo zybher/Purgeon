@@ -8,6 +8,10 @@
 //! It is an ordinary always-on-top window that never takes focus: nothing is injected into or
 //! hooked onto the app below, so it is safe next to anti-cheat. It shows over borderless and
 //! windowed apps, not over exclusive fullscreen. While it is closed its window doesn't exist.
+//!
+//! FPS comes from the frame events DirectX already announces to Windows' event tracing (what
+//! PresentMon and the Xbox Game Bar read), so it doesn't touch the game either. Windows only
+//! lets administrators listen, so without that the cell says "Elevate for FPS".
 
 use super::morph::{self, Piece};
 use super::widgets;
@@ -20,7 +24,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 
 const TITLE: &str = "Purgeon overlay";
-const W: f32 = 860.0;
+pub(super) const W: f32 = 920.0;
 pub(super) const H: f32 = 64.0;
 /// Gap between the top of the screen and the bar, in points
 const TOP: f32 = 10.0;
@@ -154,6 +158,8 @@ pub fn toggle(ctx: &egui::Context) {
 
 /// What the app in front is using, its helper processes included
 struct Usage {
+    /// Its processes, to find the one drawing frames
+    pids: Vec<u32>,
     name: String,
     path: Option<std::sync::Arc<str>>,
     ram: u64,
@@ -178,7 +184,7 @@ fn usage(s: &Snapshot, pid: u32) -> Option<Usage> {
         }
     }
     let name = crate::platform::friendly_name(me.name.trim_end_matches(".exe").trim_end_matches(".EXE"), me.path.as_deref());
-    let mut u = Usage { name, path: me.path.clone(), ram: 0, vram: 0, cpu: 0.0, gpu: 0.0 };
+    let mut u = Usage { pids: set.iter().copied().collect(), name, path: me.path.clone(), ram: 0, vram: 0, cpu: 0.0, gpu: 0.0 };
     let mut shared = 0;
     for p in s.procs.iter().filter(|p| set.contains(&p.pid)) {
         // the same rule as the RAM column: private memory of each, plus the largest shared part
@@ -340,7 +346,7 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
     // ---- the app in front -------------------------------------------------------------
     let front = FRONT.load(Ordering::Relaxed);
     let u = usage(s, pid_of(front));
-    let left = Rect::from_min_max(full.min + vec2(14.0, 0.0), pos2(full.min.x + 500.0, full.max.y));
+    let left = Rect::from_min_max(full.min + vec2(14.0, 0.0), pos2(full.min.x + 560.0, full.max.y));
     let cy = full.center().y;
     match &u {
         None => {
@@ -364,7 +370,21 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
                 ("GPU", if s.gpu_proc { format!("{:.0}%", u.gpu) } else { "—".into() }, u.gpu / 100.0, GPU_COL),
             ];
             let x0 = nx + 132.0;
-            let cw = (left.max.x - x0) / 4.0;
+            let cw = (left.max.x - x0) / 5.0;
+            // FPS first: for a game it is the number that matters most
+            {
+                let (value, label, col) = match crate::sys::etw::frames() {
+                    crate::sys::etw::Frames::Counting => {
+                        (crate::sys::etw::fps(&u.pids).map_or("—".into(), |f| format!("{f:.0}")), "FPS", txt())
+                    }
+                    crate::sys::etw::Frames::NotAllowed => ("Elevate".to_string(), "for FPS", txt_dim()),
+                };
+                widgets::fit(&p, pos2(x0, cy - 9.0), Align2::LEFT_CENTER, &value, sb(15.0), cw - 12.0, col);
+                p.text(pos2(x0, cy + 9.0), Align2::LEFT_CENTER, label, reg(10.5), txt_faint());
+                text(None, pos2(x0, cy - 9.0), Align2::LEFT_CENTER, &value, sb(15.0), col);
+                text(None, pos2(x0, cy + 9.0), Align2::LEFT_CENTER, label, reg(10.5), txt_faint());
+            }
+            let x0 = x0 + cw;
             for (i, (label, value, frac, col)) in stats.iter().enumerate() {
                 let x = x0 + i as f32 * cw;
                 widgets::fit(&p, pos2(x, cy - 9.0), Align2::LEFT_CENTER, value, sb(15.0), cw - 12.0, txt());

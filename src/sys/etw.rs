@@ -9,10 +9,16 @@
 //!
 //! It runs a private "system logger" session (Windows 8+), so it never takes over the shared
 //! "NT Kernel Logger" another tool may be using. The session is stopped when Purgeon exits.
+//!
+//! A second, ordinary session counts frames for the overlay's FPS, the way PresentMon, CapFrameX
+//! and the Xbox Game Bar do: DirectX itself announces every frame a program shows (the DXGI and
+//! D3D9 "Present" events), and Purgeon only listens. Nothing is read from, opened in or added to
+//! the game. Windows allows it for administrators and the "Performance Log Users" group.
 
 use super::win::wide;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 #[repr(C)]
@@ -33,6 +39,13 @@ const UDP_IP: Guid = Guid { d1: 0xbf3a_50c5, d2: 0xa9c9, d3: 0x4988, d4: [0xa0, 
 const SYSTEM_TRACE_CONTROL: Guid = Guid { d1: 0x9e81_4aad, d2: 0x3204, d3: 0x11d2, d4: [0x9a, 0x82, 0x00, 0x60, 0x08, 0xa8, 0x69, 0x39] };
 /// Our own session's GUID
 const SESSION_GUID: Guid = Guid { d1: 0x5b1e_7c21, d2: 0x9a4f, d3: 0x4d0b, d4: [0x8e, 0x61, 0x2f, 0x3a, 0x70, 0xd4, 0x91, 0xc5] };
+
+/// Microsoft-Windows-DXGI (Direct3D 10, 11, 12) and Microsoft-Windows-D3D9
+const DXGI: Guid = Guid { d1: 0xca11_c036, d2: 0x0102, d3: 0x4a2d, d4: [0xa6, 0xad, 0xf0, 0x3c, 0xfe, 0xd5, 0xd3, 0xc9] };
+const D3D9: Guid = Guid { d1: 0x783a_ca0a, d2: 0x790e, d3: 0x4d7f, d4: [0x84, 0x51, 0xaa, 0x85, 0x05, 0x11, 0xc6, 0xb9] };
+/// The frame session's own GUID
+const FRAME_GUID: Guid = Guid { d1: 0x7c2d_41e8, d2: 0x5b93, d3: 0x4f0a, d4: [0x9e, 0x17, 0x6a, 0xc4, 0x02, 0xb8, 0x3d, 0x5f] };
+const FRAME_SESSION: &str = "Purgeon Frame Trace";
 
 const SESSION_NAME: &str = "Purgeon Disk Trace";
 const KERNEL_LOGGER: &str = "NT Kernel Logger";
@@ -135,6 +148,7 @@ extern "system" {
     fn ControlTraceW(handle: u64, name: *const u16, props: *mut Props, code: u32) -> u32;
     fn OpenTraceW(log: *mut LogFile) -> u64;
     fn ProcessTrace(handles: *const u64, count: u32, start: *const c_void, end: *const c_void) -> u32;
+    fn EnableTraceEx2(handle: u64, provider: *const Guid, code: u32, level: u8, any: u64, all: u64, timeout: u32, params: *const c_void) -> u32;
     fn CloseTrace(handle: u64) -> u32;
 }
 
@@ -144,6 +158,7 @@ extern "system" {
     fn GetProcessIdOfThread(h: isize) -> u32;
     fn CloseHandle(h: isize) -> i32;
     fn QueryPerformanceFrequency(f: *mut i64) -> i32;
+    fn QueryPerformanceCounter(c: *mut i64) -> i32;
 }
 
 /// Physical disk activity of one process since the last `take`
@@ -180,6 +195,10 @@ fn acc() -> &'static Mutex<Acc> {
 static RUNNING: OnceLock<&'static str> = OnceLock::new();
 
 fn props(guid: Guid, mode: u32) -> Props {
+    props_with(guid, mode, EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_NETWORK_TCPIP)
+}
+
+fn props_with(guid: Guid, mode: u32, enable_flags: u32) -> Props {
     Props {
         buffer_size: std::mem::size_of::<Props>() as u32,
         provider_id: 0,
@@ -194,7 +213,7 @@ fn props(guid: Guid, mode: u32) -> Props {
         max_file_size: 0,
         log_file_mode: mode,
         flush_timer: 1,
-        enable_flags: EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_NETWORK_TCPIP,
+        enable_flags,
         age_limit: 0,
         number_of_buffers: 0,
         free_buffers: 0,
@@ -211,17 +230,22 @@ fn props(guid: Guid, mode: u32) -> Props {
 
 /// Starts (or restarts, if a previous run left it behind) a session; returns the status code
 fn start_session(name: &str, guid: Guid, mode: u32) -> u32 {
+    start_session_with(name, guid, mode, EVENT_TRACE_FLAG_DISK_IO | EVENT_TRACE_FLAG_NETWORK_TCPIP).0
+}
+
+/// The same, with the kernel event flags given (0 for an ordinary session); also the handle
+fn start_session_with(name: &str, guid: Guid, mode: u32, flags: u32) -> (u32, u64) {
     let n = wide(name);
     let mut h = 0u64;
-    let mut p = props(guid, mode);
+    let mut p = props_with(guid, mode, flags);
     let mut r = unsafe { StartTraceW(&mut h, n.as_ptr(), &mut p) };
     if r == ERROR_ALREADY_EXISTS {
-        let mut q = props(guid, mode);
+        let mut q = props_with(guid, mode, flags);
         unsafe { ControlTraceW(0, n.as_ptr(), &mut q, EVENT_TRACE_CONTROL_STOP) };
-        let mut p = props(guid, mode);
+        let mut p = props_with(guid, mode, flags);
         r = unsafe { StartTraceW(&mut h, n.as_ptr(), &mut p) };
     }
-    r
+    (r, h)
 }
 
 /// TcpIp / UdpIp send and receive: 10 send, 11 receive (IPv4), 26 / 27 the same over IPv6
@@ -374,8 +398,136 @@ impl DiskTrace {
     }
 }
 
+// ---- frames, for the overlay's FPS -------------------------------------------------------
+
+/// 0 not tried, 1 counting, 2 Windows said no (needs administrator or Performance Log Users)
+static FRAMES: AtomicU8 = AtomicU8::new(0);
+static QPC_FREQ: AtomicI64 = AtomicI64::new(1);
+
+/// When each process showed its recent frames (QPC ticks), the last few seconds only
+fn shown() -> &'static Mutex<HashMap<u32, VecDeque<i64>>> {
+    static S: OnceLock<Mutex<HashMap<u32, VecDeque<i64>>>> = OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+unsafe extern "system" fn on_frame(r: *const EventRecord) {
+    let r = &*r;
+    // DXGI Present_Start (42) and PresentMultiplaneOverlay_Start (55); D3D9 Present_Start (1)
+    let frame = (r.provider == DXGI && (r.id == 42 || r.id == 55)) || (r.provider == D3D9 && r.id == 1);
+    if !frame {
+        return;
+    }
+    let keep = 3 * QPC_FREQ.load(Ordering::Relaxed);
+    let Ok(mut s) = shown().lock() else { return };
+    let q = s.entry(r.process_id).or_default();
+    q.push_back(r.timestamp);
+    while q.front().is_some_and(|&t| t < r.timestamp - keep) || q.len() > 4000 {
+        q.pop_front();
+    }
+}
+
+/// What the FPS counter can do right now
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Frames {
+    Counting,
+    /// Windows only lets administrators (and the Performance Log Users group) listen
+    NotAllowed,
+}
+
+/// Starts listening for frames, once; later calls only report how that went
+pub fn frames() -> Frames {
+    match FRAMES.load(Ordering::Relaxed) {
+        1 => return Frames::Counting,
+        2 => return Frames::NotAllowed,
+        _ => {}
+    }
+    let ok = start_frames();
+    FRAMES.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
+    if ok { Frames::Counting } else { Frames::NotAllowed }
+}
+
+fn start_frames() -> bool {
+    let mut f = 0i64;
+    unsafe { QueryPerformanceFrequency(&mut f) };
+    QPC_FREQ.store(f.max(1), Ordering::Relaxed);
+    let (r, h) = start_session_with(FRAME_SESSION, FRAME_GUID, EVENT_TRACE_REAL_TIME_MODE, 0);
+    if r != 0 {
+        return false;
+    }
+    // EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, every keyword
+    let a = unsafe { EnableTraceEx2(h, &DXGI, 1, 4, u64::MAX, 0, 0, std::ptr::null()) };
+    let b = unsafe { EnableTraceEx2(h, &D3D9, 1, 4, u64::MAX, 0, 0, std::ptr::null()) };
+    if a != 0 && b != 0 {
+        stop_frames();
+        return false;
+    }
+    let wname: &'static [u16] = Box::leak(wide(FRAME_SESSION).into_boxed_slice());
+    let mut lf: LogFile = unsafe { std::mem::zeroed() };
+    lf.logger_name = wname.as_ptr();
+    lf.process_trace_mode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
+    lf.event_record_callback = Some(on_frame);
+    let th = unsafe { OpenTraceW(&mut lf) };
+    if th == INVALID_TRACE {
+        stop_frames();
+        return false;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("purgeon-frames".into())
+        .stack_size(256 * 1024)
+        .spawn(move || unsafe {
+            ProcessTrace(&th, 1, std::ptr::null(), std::ptr::null());
+            CloseTrace(th);
+        });
+    if spawned.is_err() {
+        stop_frames();
+        return false;
+    }
+    true
+}
+
+fn stop_frames() {
+    let n = wide(FRAME_SESSION);
+    let mut p = props_with(FRAME_GUID, 0, 0);
+    unsafe { ControlTraceW(0, n.as_ptr(), &mut p, EVENT_TRACE_CONTROL_STOP) };
+}
+
+/// Frames per second of whichever of these processes draws the most, over about the last
+/// second and a half (Windows hands the events over up to a second late). `None` when none
+/// of them has shown a frame lately (not a DirectX app, minimized, or a loading pause).
+pub fn fps(pids: &[u32]) -> Option<f32> {
+    let f = QPC_FREQ.load(Ordering::Relaxed) as f64;
+    let mut now = 0i64;
+    unsafe { QueryPerformanceCounter(&mut now) };
+    let Ok(mut s) = shown().lock() else { return None };
+    // forget programs that stopped drawing
+    s.retain(|_, q| q.back().is_some_and(|&t| (now - t) as f64 <= 5.0 * f));
+    let mut best: Option<f32> = None;
+    for pid in pids {
+        let Some(q) = s.get(pid) else { continue };
+        let Some(&last) = q.back() else { continue };
+        if (now - last) as f64 > 2.5 * f {
+            continue;
+        }
+        let from = last - (1.5 * f) as i64;
+        let recent: Vec<i64> = q.iter().copied().filter(|&t| t >= from).collect();
+        if recent.len() < 3 {
+            continue;
+        }
+        let span = (recent[recent.len() - 1] - recent[0]) as f64 / f;
+        if span < 0.2 {
+            continue;
+        }
+        let rate = ((recent.len() - 1) as f64 / span) as f32;
+        best = Some(best.map_or(rate, |b| b.max(rate)));
+    }
+    best
+}
+
 /// Ends the trace session (call on exit: kernel sessions outlive the process otherwise)
 pub fn stop() {
+    if FRAMES.load(Ordering::Relaxed) == 1 {
+        stop_frames();
+    }
     if let Some(name) = RUNNING.get() {
         let n = wide(name);
         let mut p = props(if *name == KERNEL_LOGGER { SYSTEM_TRACE_CONTROL } else { SESSION_GUID }, 0);

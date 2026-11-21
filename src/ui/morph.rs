@@ -112,12 +112,12 @@ pub fn test_begin(ctx: &egui::Context, snap: Option<&crate::sys::Snapshot>) -> b
     let Some((ox, oy)) = crate::platform::client_origin() else { return false };
     let ppp = ctx.pixels_per_point();
     // the overlay's drawing, made off to the side and invisible, just to note its pieces down
-    let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(860.0, super::overlay::H));
+    let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(super::overlay::W, super::overlay::H));
     let mut ui = egui::Ui::new(ctx.clone(), egui::LayerId::background(), egui::Id::new("morph_test"), egui::UiBuilder::new().max_rect(area).invisible());
     super::overlay::test_bar(&mut ui, snap);
     let pieces = DRAWN.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let w = ctx.screen_rect().width() * ppp;
-    let (bw, bh) = (860.0 * ppp, super::overlay::H * ppp);
+    let (bw, bh) = (super::overlay::W * ppp, super::overlay::H * ppp);
     let x = ox + ((w - bw) / 2.0) as i32;
     let y = oy + (10.0 * ppp) as i32;
     *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { pieces, bar: [x, y, x + bw as i32, y + bh as i32], shot: None, shot_at: [0; 4] });
