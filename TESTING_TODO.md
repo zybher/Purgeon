@@ -32,7 +32,7 @@ and write down anything that looks wrong.
 
 ## Settings page
 - [ ] Size: on Auto, the bar on the ultrawide is 125% (the Settings card says so). Is it easy to read at a glance now? Try 150% too
-- [ ] Changing the size while the bar is open redraws it at the new size, and the text stays sharp
+- [ ] Changing the size while the bar is open redraws it at the new size, and the text and the app icon stay sharp
 - [ ] At 125% and 150%, the expand button still reacts to the mouse (it lights up on hover) and opens Purgeon with the morph
 - [ ] Shortcut: click the Alt+Shift+P box, press Ctrl+Alt+O. It says "Saved", and Ctrl+Alt+O now opens the bar from a game. Alt+Shift+P no longer does
 - [ ] While the box says "Press the new keys…", pressing Alt+Shift+P doesn't open the bar

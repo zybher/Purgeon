@@ -210,24 +210,31 @@ fn shrink(img: &ColorImage, size: usize) -> ColorImage {
     ColorImage { size: [size, size], pixels: out }
 }
 
+/// Each icon is pulled out at the pixel size it is drawn at (one texture per size), so a big
+/// icon (the overlay's, more so when it is zoomed) is never a small one stretched
+type Key = (Arc<str>, i32);
+
+/// The pixel sizes icons are loaded at; a request uses the next one up
+const SIZES: [i32; 8] = [16, 20, 24, 32, 40, 48, 64, 96];
+
 struct Cache {
-    tex: HashMap<Arc<str>, Option<TextureHandle>>,
-    pending: HashSet<Arc<str>>,
-    tx: Sender<(Arc<str>, i32)>,
-    rx: Receiver<(Arc<str>, Option<ColorImage>)>,
+    tex: HashMap<Key, Option<TextureHandle>>,
+    pending: HashSet<Key>,
+    tx: Sender<Key>,
+    rx: Receiver<(Key, Option<ColorImage>)>,
 }
 
 fn cache(ctx: &egui::Context) -> &'static Mutex<Cache> {
     static C: OnceLock<Mutex<Cache>> = OnceLock::new();
     C.get_or_init(|| {
-        let (tx, worker_rx) = channel::<(Arc<str>, i32)>();
+        let (tx, worker_rx) = channel::<Key>();
         let (worker_tx, rx) = channel();
         let ctx = ctx.clone();
         let _ = std::thread::Builder::new().name("purgeon-icons".into()).spawn(move || {
             unsafe { CoInitializeEx(std::ptr::null_mut(), 2) };
             while let Ok((path, size)) = worker_rx.recv() {
                 let img = extract(&path, size);
-                if worker_tx.send((path, img)).is_err() {
+                if worker_tx.send(((path, size), img)).is_err() {
                     break;
                 }
                 ctx.request_repaint();
@@ -240,7 +247,7 @@ fn cache(ctx: &egui::Context) -> &'static Mutex<Cache> {
 /// Drops the icons of programs that are no longer running (their textures are freed)
 pub fn retain(ctx: &egui::Context, live: &HashSet<&str>) {
     if let Ok(mut c) = cache(ctx).lock() {
-        c.tex.retain(|k, _| live.contains(&**k));
+        c.tex.retain(|k, _| live.contains(&*k.0));
     }
 }
 
@@ -254,24 +261,34 @@ pub fn paint(ctx: &egui::Context, p: &Painter, r: Rect, name: &str, path: Option
         widgets::avatar(p, r, name);
         return;
     };
-    while let Ok((path, img)) = c.rx.try_recv() {
-        c.pending.remove(&path);
-        let tex = img.map(|img| ctx.load_texture(format!("icon:{path}"), img, TextureOptions::LINEAR));
-        c.tex.insert(path, tex);
+    while let Ok((key, img)) = c.rx.try_recv() {
+        c.pending.remove(&key);
+        let tex = img.map(|img| ctx.load_texture(format!("icon:{}:{}", key.1, key.0), img, TextureOptions::LINEAR));
+        c.tex.insert(key, tex);
     }
-    match c.tex.get(path) {
+    let want = (r.width() * ctx.pixels_per_point()).round() as i32;
+    let size = SIZES.into_iter().find(|s| *s >= want).unwrap_or(96);
+    let key: Key = (path.clone(), size);
+    // while the right size loads, any size already there beats the letter
+    let loaded = |c: &Cache| c.tex.iter().find(|(k, t)| k.0 == *path && t.is_some()).and_then(|(_, t)| t.clone());
+    match c.tex.get(&key) {
         Some(Some(t)) => {
             let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             p.image(t.id(), r, uv, Color32::WHITE);
         }
         Some(None) => widgets::avatar(p, r, name),
         None => {
-            if !c.pending.contains(path) {
-                c.pending.insert(path.clone());
-                let size = (r.width() * ctx.pixels_per_point()).round().clamp(16.0, 64.0) as i32;
-                let _ = c.tx.send((path.clone(), size));
+            if !c.pending.contains(&key) {
+                c.pending.insert(key.clone());
+                let _ = c.tx.send(key);
             }
-            widgets::avatar(p, r, name);
+            match loaded(&c) {
+                Some(t) => {
+                    let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                    p.image(t.id(), r, uv, Color32::WHITE);
+                }
+                None => widgets::avatar(p, r, name),
+            }
         }
     }
 }
