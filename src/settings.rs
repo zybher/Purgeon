@@ -31,8 +31,16 @@ pub fn text(key: &str) -> Option<String> {
 }
 
 pub fn set_flag(key: &str, on: bool) {
+    set_text(key, Some(if on { "on" } else { "off" }));
+}
+
+/// Sets a text setting, or removes it with None, and saves the file
+pub fn set_text(key: &str, value: Option<&str>) {
     let text = with(|m| {
-        m.insert(key.to_string(), if on { "on" } else { "off" }.to_string());
+        match value {
+            Some(v) => m.insert(key.to_string(), v.to_string()),
+            None => m.remove(key),
+        };
         m.iter().map(|(k, v)| format!("{k}={v}\n")).collect::<String>()
     });
     if let Some(p) = path() {

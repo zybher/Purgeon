@@ -3,6 +3,8 @@
 
 mod alerts;
 mod anim;
+mod apps;
+mod boost;
 mod fmt;
 mod platform;
 mod settings;
@@ -19,6 +21,8 @@ pub const TITLE: &str = "Purgeon";
 /// Exits Purgeon for good: from the tray menu, after relaunching elevated, or after a screenshot
 pub fn quit() -> ! {
     tray::remove();
+    // the boosted app's priority and the power plan go back to how they were
+    boost::on_quit();
     // kernel trace sessions outlive the process unless stopped
     sys::etw::stop();
     std::process::exit(0)
@@ -51,6 +55,7 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
     alerts::load();
+    boost::load();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
         .with_inner_size([1180.0, 760.0])

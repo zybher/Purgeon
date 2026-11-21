@@ -1,6 +1,10 @@
 # Design: "Free memory from unused apps"
 
-Status: design only. Nothing here is implemented.
+Status: shipped in a simpler form, on the Overview page as "Free up memory". It closes apps
+(after the user confirms each one) instead of trimming their working sets: closing frees the
+memory for real, while trimming only moves it to the standby list, where it comes straight back
+once the app wakes up. The candidate rules below are the ones used (no audio check yet). The
+trimming notes are kept for reference.
 
 ## The problem
 

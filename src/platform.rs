@@ -208,6 +208,13 @@ fn read_app_name(path: &str) -> Option<String> {
     }
 }
 
+/// What to call an app: its own name from the .exe when it has one, else the file name with a
+/// capital first letter ("chrome" -> "Chrome")
+pub fn friendly_name(base: &str, path: Option<&str>) -> String {
+    let n = path.and_then(app_name).unwrap_or_else(|| base.to_string());
+    n.chars().take(1).flat_map(char::to_uppercase).chain(n.chars().skip(1)).collect()
+}
+
 /// Dark rounded corners and border for a small borderless window such as the overlay
 pub fn style_popup(h: isize) {
     unsafe {

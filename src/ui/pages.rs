@@ -31,7 +31,7 @@ fn caption(p: &Painter, x: f32, y: f32, text: &str, col: Color32) -> f32 {
 }
 
 /// Caption that stays within `max_w` (shrinks, then ellipsizes)
-fn caption_w(p: &Painter, x: f32, y: f32, text: &str, col: Color32, max_w: f32) -> f32 {
+pub(super) fn caption_w(p: &Painter, x: f32, y: f32, text: &str, col: Color32, max_w: f32) -> f32 {
     p.circle_filled(pos2(x + 4.0, y), 4.0, col);
     widgets::fit(p, pos2(x + 14.0, y), Align2::LEFT_CENTER, text, sb(12.5), max_w - 14.0, txt_dim()).max.x
 }
@@ -316,6 +316,8 @@ pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
             resp.on_hover_text(gpu_note(g.util, g.dedicated_used as f32 / g.dedicated_total.max(1) as f32));
         }
 
+        ui.add_space(GAP);
+        super::tools::cards(ui, w, GAP);
         ui.add_space(GAP);
         let groups = grouped(s);
         let (row, _) = ui.allocate_exact_size(vec2(w, 300.0), Sense::hover());

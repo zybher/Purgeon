@@ -5,6 +5,7 @@ pub mod overlay;
 mod pages;
 mod icons;
 mod table;
+mod tools;
 mod widgets;
 
 use crate::anim::*;
@@ -73,6 +74,8 @@ impl App {
         let mut watch = crate::alerts::Watch::default();
         let mut tip = String::new();
         let shared = sys::start(cc.egui_ctx.clone(), move |s| {
+            crate::boost::step(s);
+            crate::apps::step(s);
             if let Some(a) = watch.check(s) {
                 crate::tray::notify(&a.title, &a.body, true);
             }
@@ -272,6 +275,7 @@ impl App {
 
 impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        crate::boost::on_quit();
         // kernel trace sessions outlive the process unless stopped
         crate::sys::etw::stop();
     }

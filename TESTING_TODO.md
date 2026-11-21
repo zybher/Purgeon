@@ -27,6 +27,24 @@ and write down anything that looks wrong.
 - [ ] The bar is easy to read at a glance on the ultrawide. If the text feels too small, say so and it can get a size setting (125%, 150%) or scale up on wide screens by itself
 - [ ] The System side's two rows read clearly: LOAD (how busy CPU, GPU, RAM are, plus download speed) and TEMP (how hot). CPU temperature shows "—" on purpose, since reading it needs a driver
 
+## Boost an app (Overview page)
+- [ ] Pick a game from "Choose an open app…" and click Boost. The card says "Priority raised" and "Power plan: High performance"
+- [ ] While the game runs, Task Manager > Details > right-click the game > Set priority shows Above normal
+- [ ] Windows Settings > System > Power shows the High performance plan while the game runs (on some PCs only in Control Panel > Power Options)
+- [ ] Close the game: the power plan goes back to the one you had before
+- [ ] Start the game again: it gets boosted again on its own
+- [ ] Click Stop boost while the game runs: priority back to Normal, power plan back
+- [ ] Quit Purgeon from the tray while boosting: priority and power plan go back
+- [ ] With Roblox (or another anti-cheat game), check what the card says. If it says the game doesn't allow it, that's expected
+- [ ] Does the game feel any different? Honest answer welcome, it's meant as a small nudge
+
+## Free up memory (Overview page)
+- [ ] Leave Purgeon open for 10+ minutes with apps you're not using (Discord, Steam, a second browser). They show up in the list
+- [ ] The app you're actively using never shows up there, and neither does a game that's running
+- [ ] Close… on an app with a window: it closes like you clicked its X (it may ask to save)
+- [ ] Close… on a tray-only app (Discord hidden in the tray): it ends, and the card says how much free memory changed
+- [ ] Cancel in the confirm box really does nothing
+
 ## Elevate (administrator mode)
 - [ ] Clicking Elevate and approving UAC restarts Purgeon as administrator
 - [ ] Disk page: the per-app disk speeds show up

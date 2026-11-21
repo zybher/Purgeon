@@ -53,13 +53,36 @@ it again to slide it away. It works from the tray too.
 
 On the left it shows the app you're using (a game, Blender, a browser, anything): how much RAM,
 VRAM, CPU and GPU it takes, its helper processes included. On the right, smaller, the whole PC:
-CPU, GPU temperature, RAM and network, which turn amber or red only when something's wrong. The
-button at the far right opens Purgeon.
+in two rows: LOAD (CPU, GPU and RAM use, and download speed) and TEMP (how hot the CPU and GPU
+are). They turn amber or red only when something's wrong. The button at the far right opens
+Purgeon.
 
 The bar is a normal always-on-top window that never takes focus. Nothing is added to or hooked
 into the game, so it's safe with anti-cheat, but it can't show an FPS counter, and it can't
 appear over exclusive fullscreen games (borderless and windowed are fine). To use another
 shortcut, put a line like `overlay_key=Ctrl+Alt+O` in `%APPDATA%\Purgeon\settings.ini`.
+
+## Boost an app
+
+On the Overview page, pick a game or app and click **Boost**. Whenever it runs, Purgeon raises
+its priority one step (Normal to Above normal, never higher) and switches Windows to the High
+performance power plan. When the app closes, the boost is turned off, or Purgeon quits, the
+priority and the power plan go back to what they were. Purgeon remembers the pick and boosts the
+app every time it runs.
+
+This is honest help, not magic: it makes a small difference when the CPU is busy with other
+things, and none when the graphics card is what limits a game. Some games' anti-cheat refuses
+the priority change; Purgeon then says so and leaves it at Normal. Laptops without a High
+performance plan keep their plan.
+
+## Free up memory
+
+Also on the Overview page. It lists apps that hold over 200 MB and that you haven't used for
+10 minutes (never in front, near 0% CPU and GPU). Clicking **Close…** asks first. An app with a
+window open is asked to close, the same as clicking its X, so it can ask to save. One with no
+window (tray and background apps) is ended. A few seconds later the card reports how much free
+memory actually changed. Purgeon never closes anything on its own, and there's no "clean all
+memory" button: emptying every app's memory at once makes the PC slower, not faster.
 
 ## Keyboard
 
