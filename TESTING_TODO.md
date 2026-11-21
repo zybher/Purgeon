@@ -60,6 +60,8 @@ and write down anything that looks wrong.
 - [ ] Close… on an app with a window: it closes like you clicked its X (it may ask to save)
 - [ ] Close… on a tray-only app (Discord hidden in the tray): it ends, and the card says how much free memory changed
 - [ ] Cancel in the confirm box really does nothing
+- [ ] An app you haven't touched since before Purgeon started says "idle 16+ min" (at least that long), not a time that looks exact
+- [ ] Quit and start Purgeon again right away: the idle times carry on instead of starting from zero
 
 ## Elevate (administrator mode)
 - [ ] Clicking Elevate and approving UAC restarts Purgeon as administrator

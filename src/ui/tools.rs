@@ -185,7 +185,9 @@ fn free_card(ui: &mut Ui, r: Rect) {
         super::icons::paint(ui.ctx(), &p, Rect::from_center_size(pos2(rr.min.x + 20.0, rr.center().y), vec2(18.0, 18.0)), &a.exe, a.path.as_ref());
         let br = Rect::from_min_size(pos2(rr.max.x - 10.0 - 70.0, rr.center().y - 13.0), vec2(70.0, 26.0));
         let mins = a.idle.as_secs() / 60;
-        let idle = if mins >= 120 { format!("idle {} h", mins / 60) } else { format!("idle {mins} min") };
+        // "+" when it wasn't used at all while Purgeon watched: it has been idle at least this long
+        let more = if a.idle_known { "" } else { "+" };
+        let idle = if mins >= 120 { format!("idle {}{more} h", mins / 60) } else { format!("idle {mins}{more} min") };
         let tr = p.text(pos2(br.min.x - 12.0, rr.center().y), Align2::RIGHT_CENTER, format!("{}  ·  {idle}", fmt::bytes(a.mem)), reg(12.0), txt_faint());
         widgets::fit(&p, pos2(rr.min.x + 36.0, rr.center().y), Align2::LEFT_CENTER, &a.name, reg(12.5), tr.min.x - 12.0 - (rr.min.x + 36.0), txt());
         if button(ui, br, ("free_close", i), "Close…", false, !sg.busy) {

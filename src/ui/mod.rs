@@ -93,7 +93,11 @@ impl App {
                 tip = t;
             }
         });
-        crate::tray::start(shared.clone(), cc.egui_ctx.clone());
+        // a dev capture (PURGEON_SHOT) gets no tray icon, shortcut or notifications, so it never
+        // clashes with the copy of Purgeon the user is running
+        if std::env::var_os("PURGEON_SHOT").is_none() {
+            crate::tray::start(shared.clone(), cc.egui_ctx.clone());
+        }
         App {
             shared,
             snap: None,

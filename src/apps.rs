@@ -4,11 +4,15 @@
 //! An app here is every process with the same exe name ("Discord.exe" ×6). It counts as unused
 //! when, for at least `IDLE_FOR`, it was never the window in front and stayed near 0% CPU and GPU.
 //! Purgeon only ever suggests; nothing is closed until the user confirms it for that one app.
+//!
+//! Purgeon only knows what it watched. An app that hasn't been used since Purgeon started has
+//! been idle at least that long, maybe much longer, so it shows as "idle 16+ min". When Purgeon
+//! restarts soon after it last ran, it picks up the times it had saved (`app-use.txt`).
 
 use crate::sys::Snapshot;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// How long an app must sit unused before it is suggested
 pub const IDLE_FOR: Duration = Duration::from_secs(10 * 60);
@@ -53,6 +57,9 @@ pub struct App {
     pub mem: u64,
     /// How long it has been unused (zero when in use)
     pub idle: Duration,
+    /// False when it wasn't used at all while Purgeon watched: then `idle` is only how long
+    /// Purgeon has been watching, and the real time is longer
+    pub idle_known: bool,
     /// It has a window on screen
     pub windowed: bool,
 }
@@ -62,6 +69,8 @@ struct Track {
     used: Instant,
     /// CPU share, smoothed over about two minutes
     cpu: f32,
+    /// `used` is a real moment of use (seen, or saved by the last run), not just when watching began
+    known: bool,
 }
 
 struct Closing {
@@ -85,6 +94,45 @@ struct State {
     note: Option<(String, bool, Instant)>,
     avail: u64,
     avail_frac: f32,
+    /// Last use of each app from the previous run, as unix seconds
+    restored: HashMap<String, u64>,
+    saved_at: Option<Instant>,
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+fn use_file() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var_os("APPDATA")?).join("Purgeon").join("app-use.txt"))
+}
+
+/// The times saved by the last run, if it was running until a few minutes ago. After a longer
+/// gap the apps may have been used meanwhile, so the old times would be wrong.
+fn load_use() -> HashMap<String, u64> {
+    let Some(text) = use_file().and_then(|p| std::fs::read_to_string(p).ok()) else { return HashMap::new() };
+    let mut lines = text.lines();
+    let saved: u64 = lines.next().and_then(|l| l.strip_prefix("saved\t")).and_then(|v| v.parse().ok()).unwrap_or(0);
+    if now_unix().saturating_sub(saved) > 5 * 60 {
+        return HashMap::new();
+    }
+    lines.filter_map(|l| l.split_once('\t')).filter_map(|(k, v)| Some((k.to_string(), v.parse().ok()?))).collect()
+}
+
+fn save_use(st: &State, now: Instant) {
+    let Some(p) = use_file() else { return };
+    let unix = now_unix();
+    let mut out = format!("saved\t{unix}\n");
+    for (exe, t) in &st.tracks {
+        if t.known {
+            let ago = now.duration_since(t.used).as_secs();
+            out.push_str(&format!("{exe}\t{}\n", unix.saturating_sub(ago)));
+        }
+    }
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(p, out);
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -153,7 +201,11 @@ pub fn step(s: &Snapshot) {
     }
 
     with(|st| {
-        let started = *st.started.get_or_insert(now);
+        if st.started.is_none() {
+            st.started = Some(now);
+            st.restored = load_use();
+        }
+        let unix = now_unix();
         st.avail = s.mem.avail;
         st.avail_frac = if s.mem.total == 0 { 1.0 } else { s.mem.avail as f32 / s.mem.total as f32 };
         let dt = s.interval.max(0.25);
@@ -161,10 +213,18 @@ pub fn step(s: &Snapshot) {
         let mut apps = Vec::new();
         let mut pids = HashMap::new();
         for (exe, g) in &groups {
-            let t = st.tracks.entry(exe.clone()).or_insert(Track { used: now, cpu: g.cpu });
+            let restored = &st.restored;
+            let t = st.tracks.entry(exe.clone()).or_insert_with(|| match restored.get(exe) {
+                Some(&at) => {
+                    let ago = Duration::from_secs(unix.saturating_sub(at));
+                    Track { used: now.checked_sub(ago).unwrap_or(now), cpu: g.cpu, known: true }
+                }
+                None => Track { used: now, cpu: g.cpu, known: false },
+            });
             t.cpu += (g.cpu - t.cpu) * a;
             if g.front || t.cpu >= 0.25 || g.cpu >= 2.0 || g.gpu >= 2.0 {
                 t.used = now;
+                t.known = true;
             }
             let Some(path) = g.path.clone() else { continue };
             if g.skip || path.to_lowercase().starts_with(&windir) {
@@ -177,6 +237,7 @@ pub fn step(s: &Snapshot) {
                 path: Some(path),
                 mem: g.private + g.shared,
                 idle: now.duration_since(t.used),
+                idle_known: t.known,
                 windowed: g.windowed,
             });
             pids.insert(exe.clone(), g.pids.clone());
@@ -185,7 +246,12 @@ pub fn step(s: &Snapshot) {
         apps.sort_by(|a, b| b.mem.cmp(&a.mem));
         st.apps = apps;
         st.pids = pids;
-        let _ = started;
+        // only for apps already open when Purgeon started; one opened later is new
+        st.restored.clear();
+        if st.saved_at.map_or(true, |t| now.duration_since(t) >= Duration::from_secs(60)) {
+            st.saved_at = Some(now);
+            save_use(st, now);
+        }
 
         // A few seconds after a close, report what really happened
         if let Some(c) = &st.closing {
