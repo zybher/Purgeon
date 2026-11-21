@@ -478,14 +478,16 @@ pub fn is_public(ip: [u8; 4]) -> bool {
         && !(ip[0] == 100 && (64..128).contains(&ip[1]))
 }
 
-/// The address these processes talk to the most right now: a game's server. Game traffic is
-/// UDP almost always, so UDP counts four times; web traffic (ports 80/443) and DNS count little.
-pub fn net_target(pids: &[u32]) -> Option<[u8; 4]> {
+/// What these processes send to: a game's server is the busiest address. Game traffic is UDP
+/// almost always, so UDP counts four times; web traffic (ports 80/443) and DNS count little.
+/// Every address these processes sent to lately: (address, udp, port, score), best first
+pub fn net_flows(pids: &[u32]) -> Vec<([u8; 4], bool, u16, f32)> {
     let f = QPC_FREQ.load(Ordering::Relaxed);
     let mut now = 0i64;
     unsafe { QueryPerformanceCounter(&mut now) };
-    let m = flows().lock().ok()?;
-    m.iter()
+    let Ok(m) = flows().lock() else { return Vec::new() };
+    let mut v: Vec<_> = m
+        .iter()
         .filter(|((pid, ip), fl)| pids.contains(pid) && is_public(*ip) && now - fl.last < 3 * f && fl.port != 53)
         .map(|((_, ip), fl)| {
             let mut score = (fl.cur + fl.prev) as f32;
@@ -495,11 +497,12 @@ pub fn net_target(pids: &[u32]) -> Option<[u8; 4]> {
             if fl.port == 443 || fl.port == 80 {
                 score *= 0.25;
             }
-            (*ip, score)
+            (*ip, fl.udp, fl.port, score)
         })
-        .filter(|x| x.1 >= 4.0)
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|x| x.0)
+        .filter(|x| x.3 >= 4.0)
+        .collect();
+    v.sort_by(|a, b| b.3.total_cmp(&a.3));
+    v
 }
 
 unsafe extern "system" fn on_frame(r: *const EventRecord) {

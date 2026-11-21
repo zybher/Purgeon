@@ -1,7 +1,7 @@
 //! The ping counter: how long a packet takes to reach the server the app in front talks to.
 //!
 //! Which server: the address the app sends the most to (from Windows' own network events, see
-//! `etw::net_target`). How long: plain ICMP echo, like the `ping` command, one small packet a
+//! `etw::net_flows`). How long: plain ICMP echo, like the `ping` command, one small packet a
 //! second while the bar is open, sent by Purgeon itself. Nothing touches the game.
 //!
 //! Many game servers (Roblox, Riot, Blizzard) don't answer pings. Then Purgeon finds the last
@@ -51,11 +51,13 @@ struct State {
     asked: Option<Instant>,
     /// for `want`: the result so far
     shown: Ping,
+    /// another address that out-sends `want`, and since when (a switch waits a moment)
+    lead: Option<([u8; 4], Instant)>,
 }
 
 fn state() -> &'static Mutex<State> {
     static S: OnceLock<Mutex<State>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(State { want: None, asked: None, shown: Ping::None }))
+    S.get_or_init(|| Mutex::new(State { want: None, asked: None, shown: Ping::None, lead: None }))
 }
 
 /// The ping to whatever these processes talk to. Called while the bar is open; the pinging
@@ -65,20 +67,50 @@ pub fn reading(pids: &[u32]) -> Ping {
     STARTED.get_or_init(|| {
         let _ = std::thread::Builder::new().name("purgeon-ping".into()).spawn(worker);
     });
-    let target = crate::sys::etw::net_target(pids);
+    let flows = crate::sys::etw::net_flows(pids);
     let Ok(mut s) = state().lock() else { return Ping::None };
     s.asked = Some(Instant::now());
-    // keep the last server for a moment when the traffic dips (a loading screen)
-    if target.is_some() && target != s.want {
-        s.want = target;
-        s.shown = Ping::Finding;
+    let Some(best) = flows.first().map(|x| (x.0, x.3)) else {
+        s.lead = None;
+        return Ping::None;
+    };
+    // Stay with the server while it is still one of the busy ones: games also send bursts
+    // elsewhere now and then (Roblox probes 25 relay sites every few minutes), and hopping
+    // over to those for a second would show their ping and restart the search each time.
+    let kept = s.want.and_then(|w| flows.iter().find(|x| x.0 == w)).is_some_and(|x| x.3 * 2.0 >= best.1);
+    if !kept && s.want != Some(best.0) {
+        let switch = s.want.is_none() || s.lead.is_some_and(|(ip, at)| ip == best.0 && at.elapsed() >= Duration::from_secs(3));
+        if switch {
+            s.want = Some(best.0);
+            s.shown = Ping::Finding;
+            s.lead = None;
+            let list: Vec<String> = flows.iter().take(6).map(|x| format!("{} {}:{} score {:.0}", if x.1 { "udp" } else { "tcp" }, ip_str(x.0), x.2, x.3)).collect();
+            log(&format!("server {} (of: {})", ip_str(best.0), list.join(", ")));
+        } else if s.lead.map(|l| l.0) != Some(best.0) {
+            s.lead = Some((best.0, Instant::now()));
+        }
+    } else {
+        s.lead = None;
     }
-    if target.is_none() && s.want.is_some() && matches!(s.shown, Ping::Finding) {
-        return Ping::Finding;
-    }
-    match target {
-        Some(_) => s.shown,
-        None => Ping::None,
+    s.shown
+}
+
+fn ip_str(ip: [u8; 4]) -> String {
+    format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
+}
+
+/// A short record of what the ping counter picked, in %APPDATA%\Purgeon\ping-log.txt, so a
+/// wrong number can be traced back (which address, timed how)
+fn log(line: &str) {
+    use std::io::Write;
+    let Some(dir) = std::env::var_os("APPDATA").map(|a| std::path::PathBuf::from(a).join("Purgeon")) else { return };
+    let path = dir.join("ping-log.txt");
+    let fresh = std::fs::metadata(&path).map_or(true, |m| m.len() > 200_000);
+    let _ = std::fs::create_dir_all(&dir);
+    let f = std::fs::OpenOptions::new().create(true).write(true).append(!fresh).truncate(fresh).open(&path);
+    if let Ok(mut f) = f {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let _ = writeln!(f, "{secs} {line}");
     }
 }
 
@@ -149,6 +181,7 @@ fn worker() {
     let mut cur: Option<([u8; 4], [u8; 4], bool)> = None;
     let mut samples: VecDeque<f32> = VecDeque::new();
     let mut misses = 0u32;
+    let mut logged = 0u32;
     let mut hidden_since: Option<([u8; 4], Instant)> = None;
     loop {
         std::thread::sleep(Duration::from_secs(1));
@@ -169,11 +202,14 @@ fn worker() {
             if let Some((_, _, ms)) = direct {
                 cur = Some((target, target, false));
                 samples.push_back(ms);
+                log(&format!("  {} answers pings: {ms:.1} ms", ip_str(target)));
             } else if let Some(r) = entry_router(h, target) {
                 cur = Some((target, r, r != target));
+                log(&format!("  {} is silent; timing its network's entry router {}", ip_str(target), ip_str(r)));
             } else {
                 cur = None;
                 hidden_since = Some((target, Instant::now()));
+                log(&format!("  {} is silent and so is its network: no number", ip_str(target)));
                 publish(target, Ping::Hidden);
                 continue;
             }
@@ -183,6 +219,10 @@ fn worker() {
                 Some((_, _, ms)) => {
                     samples.push_back(ms);
                     misses = 0;
+                    logged += 1;
+                    if logged % 15 == 1 {
+                        log(&format!("  {} -> {ms:.1} ms", ip_str(to)));
+                    }
                 }
                 None => misses += 1,
             }
