@@ -1,3 +1,5 @@
+<img src="assets/purgeon-256.png" width="96" alt="Purgeon icon">
+
 # Purgeon
 A detailed Windows system monitor for CPU, RAM, VRAM, disk and more. Written fully in Rust.
 
@@ -18,6 +20,7 @@ measured numbers.
 | Per-process memory | Private working set | Private working set by default; switch to working set or commit | pending verification |
 | Per-process VRAM | Dedicated and shared GPU memory | Same counters, dedicated and shared kept apart, "—" when unavailable | pending verification |
 | Per-process disk | Includes cached and network I/O | As administrator: physical disk I/O only, from a kernel trace | pending verification |
+| Per-process network | Not shown (Resource Monitor only) | As administrator: download and upload per program from the same kernel trace; open connections per program without admin | pending verification |
 | Disk response time and queue | Per drive, across Task Manager and Resource Monitor | Per drive, all in one view | pending verification |
 | Own memory use | About 120 MB | About 17 MB at idle on the test machine | pending verification |
 

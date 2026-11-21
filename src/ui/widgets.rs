@@ -228,45 +228,23 @@ pub fn icon(p: &Painter, kind: Icon, c: Pos2, col: Color32) {
     }
 }
 
-/// The Purgeon mark: a blue rounded square with a pulse line
+/// The Purgeon mark (assets/purgeon-mark-white.svg): a white chip outline with pins and a
+/// blue core, drawn from shapes so it stays sharp at any scale. `size` is the mark's width.
 pub fn logo(p: &Painter, c: Pos2, size: f32) {
-    let r = Rect::from_center_size(c, vec2(size, size));
-    let mut m = egui::epaint::Mesh::default();
-    let (top, bot) = (Color32::from_rgb(96, 165, 250), Color32::from_rgb(37, 99, 235));
-    // gradient square built from the rounded rect's outline
-    let pts = rounded_pts(r, size * 0.26, 6);
-    let cidx = m.vertices.len() as u32;
-    m.colored_vertex(c, mix(top, bot, 0.5));
-    for q in &pts {
-        let k = (q.y - r.min.y) / r.height();
-        m.colored_vertex(*q, mix(top, bot, k));
-    }
-    let n = pts.len() as u32;
-    for i in 0..n {
-        m.add_triangle(cidx, cidx + 1 + i, cidx + 1 + (i + 1) % n);
-    }
-    p.add(Shape::mesh(m));
-    let pulse = [(0.16, 0.56), (0.36, 0.56), (0.45, 0.32), (0.56, 0.74), (0.65, 0.48), (0.84, 0.48)];
-    let line: Vec<Pos2> = pulse.iter().map(|(x, y)| pos2(r.min.x + x * size, r.min.y + y * size)).collect();
-    p.add(Shape::line(line, Stroke::new(size * 0.09, Color32::WHITE)));
-}
-
-fn rounded_pts(r: Rect, rad: f32, seg: usize) -> Vec<Pos2> {
-    use std::f32::consts::PI;
-    let mut v = Vec::new();
-    let corners = [
-        (pos2(r.max.x - rad, r.min.y + rad), -PI / 2.0),
-        (pos2(r.max.x - rad, r.max.y - rad), 0.0),
-        (pos2(r.min.x + rad, r.max.y - rad), PI / 2.0),
-        (pos2(r.min.x + rad, r.min.y + rad), PI),
-    ];
-    for (cc, a0) in corners {
-        for i in 0..=seg {
-            let a = a0 + PI / 2.0 * i as f32 / seg as f32;
-            v.push(pos2(cc.x + rad * a.cos(), cc.y + rad * a.sin()));
+    // the SVG's viewBox spans 16..84, centred on 50
+    let k = size / 68.0;
+    let at = |x: f32, y: f32| c + vec2((x - 50.0) * k, (y - 50.0) * k);
+    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(at(x0, y0), at(x1, y1));
+    p.rect_stroke(rect(29.0, 29.0, 71.0, 71.0), 11.0 * k, Stroke::new(7.0 * k, Color32::WHITE));
+    // pins: round-capped strokes 5.5 wide
+    let h = 2.75;
+    for v in [43.0, 57.0] {
+        for (a0, a1) in [(20.0, 29.0), (71.0, 80.0)] {
+            p.rect_filled(rect(v - h, a0 - h, v + h, a1 + h), h * k, Color32::WHITE);
+            p.rect_filled(rect(a0 - h, v - h, a1 + h, v + h), h * k, Color32::WHITE);
         }
     }
-    v
+    p.rect_filled(rect(41.0, 41.0, 59.0, 59.0), 5.0 * k, ACCENT);
 }
 
 /// A letter avatar for a process (stable hue from its name)

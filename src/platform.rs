@@ -24,50 +24,13 @@ pub fn style_window() -> bool {
     true
 }
 
-/// A rounded blue square with a white pulse line, rendered at 64 px
+/// The app icon (chip on a dark tile) for the window and taskbar. Pre-rendered from
+/// assets/purgeon-icon.svg by assets/make_icons.py as raw 128 px RGBA, so no image decoder ships.
 pub fn app_icon() -> eframe::egui::IconData {
-    const S: usize = 64;
-    let mut rgba = vec![0u8; S * S * 4];
-    let pulse = [(0.16, 0.56), (0.36, 0.56), (0.45, 0.32), (0.56, 0.74), (0.65, 0.48), (0.84, 0.48)];
-    let seg_dist = |px: f32, py: f32| -> f32 {
-        let mut best = f32::MAX;
-        for w in pulse.windows(2) {
-            let (ax, ay) = (w[0].0 * S as f32, w[0].1 * S as f32);
-            let (bx, by) = (w[1].0 * S as f32, w[1].1 * S as f32);
-            let (vx, vy) = (bx - ax, by - ay);
-            let t = (((px - ax) * vx + (py - ay) * vy) / (vx * vx + vy * vy)).clamp(0.0, 1.0);
-            let (dx, dy) = (px - ax - vx * t, py - ay - vy * t);
-            best = best.min((dx * dx + dy * dy).sqrt());
-        }
-        best
-    };
-    let r = 14.0_f32;
-    for y in 0..S {
-        for x in 0..S {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            // rounded-rect coverage
-            let qx = (px - S as f32 / 2.0).abs() - (S as f32 / 2.0 - 1.0 - r);
-            let qy = (py - S as f32 / 2.0).abs() - (S as f32 / 2.0 - 1.0 - r);
-            let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r;
-            let a = (0.5 - d).clamp(0.0, 1.0);
-            if a <= 0.0 {
-                continue;
-            }
-            // vertical gradient from a lighter to a deeper blue
-            let k = py / S as f32;
-            let (mut cr, mut cg, mut cb) = (96.0 + (37.0 - 96.0) * k, 165.0 + (99.0 - 165.0) * k, 250.0 + (235.0 - 250.0) * k);
-            let line = (3.4 - seg_dist(px, py)).clamp(0.0, 1.0);
-            cr += (255.0 - cr) * line;
-            cg += (255.0 - cg) * line;
-            cb += (255.0 - cb) * line;
-            let i = (y * S + x) * 4;
-            rgba[i] = cr as u8;
-            rgba[i + 1] = cg as u8;
-            rgba[i + 2] = cb as u8;
-            rgba[i + 3] = (a * 255.0) as u8;
-        }
-    }
-    eframe::egui::IconData { rgba, width: S as u32, height: S as u32 }
+    const S: u32 = 128;
+    let rgba = include_bytes!("../assets/icon-128.rgba").to_vec();
+    debug_assert_eq!(rgba.len(), (S * S * 4) as usize);
+    eframe::egui::IconData { rgba, width: S, height: S }
 }
 
 /// Hands every page we are not actively using back to Windows (startup-only pages such as the

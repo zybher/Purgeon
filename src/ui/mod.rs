@@ -102,7 +102,7 @@ impl App {
             ctx.send_viewport_cmd(ViewportCommand::Maximized(!is_max));
         }
 
-        widgets::logo(&p, pos2(rect.min.x + 26.0, cy), 18.0);
+        widgets::logo(&p, pos2(rect.min.x + 26.0, cy), 19.0);
         p.text(pos2(rect.min.x + 44.0, cy), Align2::LEFT_CENTER, "Purgeon", sb(13.0), txt());
 
         // Live readout in the middle of the bar
