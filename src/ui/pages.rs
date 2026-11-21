@@ -278,6 +278,8 @@ fn chevron(p: &Painter, c: egui::Pos2, open: f32, col: Color32) {
 pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     let mut go = None;
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
+        ui.set_max_width(ui.available_width() - super::PAGE_PAD);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         header(ui, "Dashboard", &format!("{}  ·  up {}", s.info.cpu_name, fmt::uptime(s.uptime)));
@@ -557,6 +559,8 @@ fn details(ui: &mut Ui, s: &Snapshot, part: Part, w: f32, scroll: f32) -> Option
 
 pub fn cpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
+        ui.set_max_width(ui.available_width() - super::PAGE_PAD);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         header(ui, "CPU", &s.info.cpu_name);
@@ -631,6 +635,8 @@ pub fn cpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
 
 pub fn memory(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
+        ui.set_max_width(ui.available_width() - super::PAGE_PAD);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         let m = &s.mem;
@@ -749,6 +755,8 @@ fn disk_title(d: &crate::sys::disk::Disk) -> String {
 
 pub fn disk(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
+        ui.set_max_width(ui.available_width() - super::PAGE_PAD);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         let total_r: f64 = s.disks.iter().map(|d| d.read).sum();
@@ -861,6 +869,8 @@ fn net_label(v: &[f32]) -> String {
 
 pub fn network(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
+        ui.set_max_width(ui.available_width() - super::PAGE_PAD);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         let down: f64 = s.nets.iter().map(|a| a.rx).sum();
@@ -1037,6 +1047,8 @@ pub fn gpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     let sel_id = egui::Id::new("gpu_sel");
     let mut sel = ctx.data(|d| d.get_temp::<usize>(sel_id)).unwrap_or(main).min(s.gpus.len() - 1);
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
+        ui.set_max_width(ui.available_width() - super::PAGE_PAD);
         let w = ui.available_width();
         let top = ui.cursor().min;
         let g = &s.gpus[sel];
@@ -1201,6 +1213,8 @@ const NO_CPU_TEMP: &str = "Windows has no built-in way to read the CPU's own tem
 
 pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
+        ui.set_max_width(ui.available_width() - super::PAGE_PAD);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         header(ui, "Sensors", "Read through Windows and the graphics driver. Purgeon installs no drivers.");

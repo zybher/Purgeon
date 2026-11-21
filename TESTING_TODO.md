@@ -91,6 +91,9 @@ and write down anything that looks wrong.
 ## Look and feel
 - [ ] Dashboard: CPU, Memory, Disk and GPU cards sit in one row at the top; the Disk card shows the busiest disk's active time with its read and write speeds
 - [ ] Click a card: it gets an outline, its arrow turns down, and a panel opens below with a bigger graph and the numbers behind it. Click it again (or another card) to close or switch. "Open full page" goes to that page
+- [ ] The scroll bar on Dashboard, CPU, Memory, Disk, Network, GPU, Sensors and Settings sits at the window's right edge
+- [ ] The lighter content panel's rounded top-left corner has no thin line over its left edge
+- [ ] Watch a graph's left end for a few updates: it slides along with the rest, with no gap flashing in before the new sample pushes it left
 - [ ] Dashboard: the "busy apps" card now sits under the four cards and shows the five apps holding the most memory as tiles, biggest first, all in GB (the bars are sized against the biggest). Hover a tile to see the exe name and how many processes it has
 - [ ] Hovering the Boost and Free up memory cards shows the longer explanation that used to be written out on the card
 - [ ] Processes page: when the order changes, the row slide feels neither too fast nor too slow

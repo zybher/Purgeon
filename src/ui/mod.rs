@@ -13,7 +13,7 @@ mod widgets;
 use crate::anim::*;
 use crate::sys::{self, Snapshot};
 use crate::theme::*;
-use eframe::egui::{self, pos2, vec2, Align2, Color32, CursorIcon, PointerButton, Rect, ResizeDirection, Rounding, Sense, Shape, Stroke, ViewportCommand};
+use eframe::egui::{self, pos2, vec2, Align2, Color32, CursorIcon, PointerButton, Rect, ResizeDirection, Rounding, Sense, Stroke, ViewportCommand};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
@@ -36,6 +36,9 @@ pub enum Page {
     Sensors,
     Settings,
 }
+
+/// Space between the page content and the content panel's sides
+pub(super) const PAGE_PAD: f32 = 28.0;
 
 const NAV: [(Page, Icon, &str, bool); 9] = [
     (Page::Dashboard, Icon::Dashboard, "Dashboard", true),
@@ -410,17 +413,16 @@ impl eframe::App for App {
             self.sidebar(ui, ctx, side);
 
             ui.painter().rect_filled(content, Rounding { nw: 14.0, ..Default::default() }, bg());
-            ui.painter().add(Shape::line(
-                vec![pos2(content.min.x, content.max.y), pos2(content.min.x, content.min.y + 14.0)],
-                Stroke::new(1.0_f32, Color32::from_gray(0x1d)),
-            ));
 
             // Page entrance: fade in and rise a few points
             let t = if crate::anim::reduced() { 1.0 } else { egui::emath::easing::cubic_out((self.page_at.elapsed().as_secs_f32() / 0.28).min(1.0)) };
             if t < 1.0 {
                 ctx.request_repaint();
             }
-            let inner = Rect::from_min_max(content.min + vec2(28.0, 22.0 + 10.0 * (1.0 - t)), content.max - vec2(28.0, 0.0));
+            // Scrolling pages run to the window's right edge (their scroll bar sits there) and keep
+            // the margin inside; the process table has its own scroll bar inside its card
+            let right = if self.page == Page::Processes { PAGE_PAD } else { 0.0 };
+            let inner = Rect::from_min_max(content.min + vec2(PAGE_PAD, 22.0 + 10.0 * (1.0 - t)), content.max - vec2(right, 0.0));
             let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(inner).id_salt(("page", self.page as u8)));
             cui.set_clip_rect(content.shrink(1.0).intersect(ui.clip_rect()));
             cui.multiply_opacity(t);

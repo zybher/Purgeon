@@ -224,8 +224,10 @@ pub fn start(ctx: eframe::egui::Context, mut on_sample: impl FnMut(&Snapshot) + 
     shared
 }
 
+/// Keeps one sample more than the graphs show: it sits just past their left edge and slides
+/// in while a new sample scrolls in on the right, so the left end never shows a gap
 fn push(h: &mut VecDeque<f32>, v: f32) {
-    if h.len() == HIST {
+    if h.len() > HIST {
         h.pop_front();
     }
     h.push_back(v);

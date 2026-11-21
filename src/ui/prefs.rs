@@ -68,6 +68,8 @@ fn combo(key: Key, m: egui::Modifiers) -> Result<String, &'static str> {
 
 pub fn show(ui: &mut Ui) {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
+        ui.set_max_width(ui.available_width() - super::PAGE_PAD);
         let w = ui.available_width();
         {
             let (r, _) = ui.allocate_exact_size(vec2(w, 58.0), Sense::hover());
