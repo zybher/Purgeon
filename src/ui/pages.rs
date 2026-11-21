@@ -661,7 +661,14 @@ pub fn network(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
             let h = &s.h_net[i];
             let (r, _) = ui.allocate_exact_size(vec2(w, 290.0), Sense::hover());
             widgets::card(&p, r, card());
-            let title = if a.desc.is_empty() || a.desc == a.name { a.name.clone() } else { format!("{}  ·  {}", a.name, a.desc) };
+            // "Ethernet 2 · Realtek ...", with the adapter type added when the name doesn't say it
+            let mut title = a.name.clone();
+            if !a.name.to_lowercase().contains(&a.kind.to_lowercase()) && a.kind != "Network" {
+                title += &format!(" ({})", a.kind);
+            }
+            if !a.desc.is_empty() && a.desc != a.name {
+                title += &format!("  ·  {}", a.desc);
+            }
             caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, &title, NET_COL, r.width() - 36.0);
             let v = glide(&ctx, egui::Id::new(("net_v", a.luid)), a.rx as f32, 10.0);
             big(&p, r.min.x + 18.0, r.min.y + 60.0, &fmt::bits(v as f64), &format!("down  ·  {} up", fmt::bits(a.tx)), 30.0);
@@ -688,13 +695,12 @@ pub fn network(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
             } else {
                 format!("{} ↓  ·  {} ↑", fmt::link(a.link_rx), fmt::link(a.link_tx))
             };
-            let tiles: [(&str, String, Option<Color32>); 6] = [
+            let tiles: [(&str, String, Option<Color32>); 5] = [
                 ("Download", fmt::bits(a.rx), Some(NET_COL)),
                 ("Upload", fmt::bits(a.tx), Some(NET_UP_COL)),
                 ("Received since start", fmt::bytes(a.rx_total), None),
                 ("Sent since start", fmt::bytes(a.tx_total), None),
                 ("Link speed", link, None),
-                ("Type", a.kind.to_string(), None),
             ];
             let o = ui.cursor().min;
             let (rects, th) = widgets::tile_grid(o, w, tiles.len(), 170.0, 64.0, 12.0);
