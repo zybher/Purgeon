@@ -72,6 +72,7 @@ extern "system" {
     fn SetWindowLongPtrW(h: isize, i: i32, v: isize) -> isize;
     fn IsIconic(h: isize) -> i32;
     fn ClientToScreen(h: isize, p: *mut [i32; 2]) -> i32;
+    fn SystemParametersInfoW(action: u32, param: u32, out: *mut core::ffi::c_void, ini: u32) -> i32;
 }
 
 /// Where the window was and its extended style, while it sits in the tray
@@ -102,6 +103,14 @@ pub fn hide_window() {
         ShowWindow(h, 0);
         SetWindowLongPtrW(h, GWL_EXSTYLE, (ex | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW);
         let [l, t, r, b] = p.normal;
+        if l <= -4000 {
+            // opened off-screen (started in the tray): come back centred on the main screen
+            let mut wa = [0i32; 4];
+            SystemParametersInfoW(0x30, 0, wa.as_mut_ptr() as _, 0);
+            let (w, h) = (r - l, b - t);
+            let (x, y) = (((wa[2] - wa[0]) - w).max(0) / 2, ((wa[3] - wa[1]) - h).max(0) / 2);
+            park.as_mut().expect("set above").0.normal = [x, y, x + w, y + h];
+        }
         let off = Placement { show: 4, normal: [-32000, -32000, -32000 + (r - l), -32000 + (b - t)], flags: 0, ..p };
         // SW_SHOWNOACTIVATE: shown (to Windows) at the off-screen spot, without taking focus
         SetWindowPlacement(h, &off);

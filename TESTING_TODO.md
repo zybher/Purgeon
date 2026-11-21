@@ -4,6 +4,9 @@ These can't be checked off-screen and need someone at the PC. Tick each one off 
 and write down anything that looks wrong.
 
 ## Tray
+- [ ] Settings > Start with Windows on, then sign out and back in (or restart): Purgeon is in the tray, not on screen, and opening it shows graphs that are already full
+- [ ] Opened from the tray after a --tray start, the window comes back centred on the main screen
+- [ ] Turning Start with Windows off removes it (Task Manager > Startup apps no longer lists Purgeon)
 - [ ] Closing the window sends Purgeon to the tray (the icons next to the clock) and doesn't quit it
 - [ ] Clicking the tray icon opens the window again, in the same place and size
 - [ ] Right-click menu: "Open Purgeon" works
@@ -94,6 +97,7 @@ and write down anything that looks wrong.
 - [ ] The scroll bar on Dashboard, CPU, Memory, Disk, Network, GPU, Sensors and Settings sits at the window's right edge
 - [ ] The lighter content panel's rounded top-left corner has no thin line over its left edge
 - [ ] Watch a graph's left end for a few updates: it slides along with the rest, with no gap flashing in before the new sample pushes it left
+- [ ] Scroll the Dashboard down and back up: the strip above the cards keeps the panel's colour; cards slide under it instead of into it
 - [ ] Dashboard: the "busy apps" card now sits under the four cards and shows the five apps holding the most memory as tiles, biggest first, all in GB (the bars are sized against the biggest). Hover a tile to see the exe name and how many processes it has
 - [ ] Hovering the Boost and Free up memory cards shows the longer explanation that used to be written out on the card
 - [ ] Processes page: when the order changes, the row slide feels neither too fast nor too slow

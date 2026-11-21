@@ -113,7 +113,8 @@ impl App {
             trimmed: false,
             was_focused: true,
             was_minimized: false,
-            hide_next: false,
+            // started at sign-in: straight to the tray
+            hide_next: crate::autostart::started_in_tray() && std::env::var_os("PURGEON_SHOT").is_none(),
             uac_note: false,
             snaps: 0,
             morph: None,
@@ -334,6 +335,12 @@ impl eframe::App for App {
             ctx.request_repaint();
             return;
         }
+        if self.hide_next && !crate::tray::active() && self.page_at.elapsed().as_secs_f32() < 5.0 {
+            // started in the tray, but the icon isn't up yet: wait for it (without it the
+            // window could not be brought back)
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            return;
+        }
         if self.hide_next {
             self.hide_next = false;
             crate::platform::hide_window();
@@ -424,7 +431,9 @@ impl eframe::App for App {
             let right = if self.page == Page::Processes { PAGE_PAD } else { 0.0 };
             let inner = Rect::from_min_max(content.min + vec2(PAGE_PAD, 22.0 + 10.0 * (1.0 - t)), content.max - vec2(right, 0.0));
             let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(inner).id_salt(("page", self.page as u8)));
-            cui.set_clip_rect(content.shrink(1.0).intersect(ui.clip_rect()));
+            // pages scroll under the top margin, not into it: the panel's top edge stays its own colour
+            let clip = Rect::from_min_max(pos2(content.min.x + 1.0, content.min.y + 22.0), content.max - vec2(1.0, 1.0));
+            cui.set_clip_rect(clip.intersect(ui.clip_rect()));
             cui.multiply_opacity(t);
             match &self.snap {
                 None => {

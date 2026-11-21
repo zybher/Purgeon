@@ -1,4 +1,4 @@
-//! The Settings page: how big the overlay is, and which shortcut opens it.
+//! The Settings page: the overlay (size, shortcut) and starting with Windows.
 
 use super::overlay;
 use super::tools::button;
@@ -78,7 +78,29 @@ pub fn show(ui: &mut Ui) {
             p.text(pos2(r.min.x, r.min.y + 40.0), Align2::LEFT_CENTER, "Saved as you change them", reg(12.5), txt_faint());
         }
         overlay_card(ui, w);
+        ui.add_space(16.0);
+        startup_card(ui, w);
     });
+}
+
+fn startup_card(ui: &mut Ui, w: f32) {
+    let (r, _) = ui.allocate_exact_size(vec2(w, 112.0), Sense::hover());
+    let p = ui.painter().clone();
+    widgets::card(&p, r, card());
+    let (x, iw) = (r.min.x + 18.0, r.width() - 36.0);
+    super::pages::caption_w(&p, x, r.min.y + 24.0, "Startup", ACCENT, iw);
+    let y = r.min.y + 72.0;
+    label(&p, x, y, "Start with Windows", "Waits in the tray from sign-in, so the graphs already have history when you open Purgeon", iw - 70.0);
+    // read once and kept, not from the registry every frame
+    let id = egui::Id::new("pref_autostart");
+    let mut on = ui.ctx().data_mut(|d| *d.get_temp_mut_or_insert_with(id, crate::autostart::is_on));
+    let sr = Rect::from_min_size(pos2(r.max.x - 18.0 - 44.0, y - 13.0), vec2(44.0, 26.0));
+    if widgets::switch(ui, sr, &mut on).clicked() {
+        if !crate::autostart::set(on) {
+            on = crate::autostart::is_on();
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(id, on));
+    }
 }
 
 fn overlay_card(ui: &mut Ui, w: f32) {

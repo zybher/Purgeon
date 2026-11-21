@@ -3,6 +3,7 @@
 
 mod alerts;
 mod anim;
+mod autostart;
 mod apps;
 mod boost;
 mod fmt;
@@ -55,6 +56,9 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
     alerts::load();
+    if std::env::var_os("PURGEON_SHOT").is_none() {
+        autostart::refresh();
+    }
     boost::load();
     egui::epaint::text::set_subpixel(platform::subpixel_order());
     let mut viewport = egui::ViewportBuilder::default()
@@ -66,6 +70,9 @@ fn main() -> eframe::Result<()> {
         .with_icon(platform::app_icon());
     if std::env::var_os("PURGEON_SHOT").is_some() {
         viewport = viewport.with_position([-5000.0, 40.0]).with_active(false);
+    } else if autostart::started_in_tray() {
+        // opens off-screen and goes to the tray on its first frame (see `platform::hide_window`)
+        viewport = viewport.with_position([-32000.0, -32000.0]).with_active(false);
     }
     let options = eframe::NativeOptions {
         viewport,

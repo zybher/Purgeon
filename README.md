@@ -33,6 +33,10 @@ keeps an eye on your PC there, using about 10 MB of RAM and almost no CPU. Click
 open it again. Right-click the icon to quit, or to turn the warnings off. Starting Purgeon again
 while it's in the tray just opens the copy that's already running.
 
+The graphs keep filling while Purgeon sits in the tray, so opening it later shows the last two
+minutes straight away. To have that from the moment you sign in, turn on Settings > Start with
+Windows: Purgeon then starts in the tray (from your own Run list, no administrator rights).
+
 From the tray it shows a Windows notification only when something is wrong:
 
 | Warning | When |
