@@ -12,6 +12,11 @@ eframe = { version = "=0.29.1", default-features = false, features = ["glow", "d
 # Accuracy and overhead check: cargo run --release --features bench -- --bench [seconds]
 bench = []
 
+# egui's own text drawing, with one change: letters are drawn with the font's hinting
+# (snapped to the pixel grid the way Windows does), so small text is sharp, not soft
+[patch.crates-io]
+epaint = { path = "vendor/epaint" }
+
 [profile.release]
 codegen-units = 1
 lto = true

@@ -30,6 +30,9 @@ and write down anything that looks wrong.
 - [ ] With Windows' animation effects off, the expand button just opens the window, with no morph
 - [ ] The System side's two rows read clearly: LOAD (how busy CPU, GPU, RAM are, plus download speed) and TEMP (how hot). CPU temperature shows "—" on purpose, since reading it needs a driver
 
+## Sharp text
+- [ ] Text in the window and the bar looks as crisp as other Windows apps next to it (no soft, smeared edges), and bold labels still look bold
+
 ## Settings page
 - [ ] Size: on Auto, the bar on the ultrawide is 125% (the Settings card says so). Is it easy to read at a glance now? Try 150% too
 - [ ] Changing the size while the bar is open redraws it at the new size, and the text and the app icon stay sharp
