@@ -1,6 +1,11 @@
 //! Real application icons. Paths are looked up by the sampler; the icons are pulled out of the
 //! executables on a small worker thread (so the UI never waits on the shell) and uploaded as
 //! tiny textures. Anything without an icon falls back to the letter avatar.
+//!
+//! Sharpness: an icon file holds a few hand-drawn sizes (Brave: 16, 32, 48, 256). Asking Windows
+//! for any other size makes it stretch one, which blurs, so Purgeon reads which sizes the file
+//! has, takes the one that fits, and draws it pixel for pixel on whole screen pixels, like
+//! Task Manager does.
 #![allow(non_snake_case, clippy::upper_case_acronyms)]
 
 use super::widgets;
@@ -48,6 +53,73 @@ struct SHFILEINFOW {
     dwAttributes: u32,
     szDisplayName: [u16; 260],
     szTypeName: [u16; 80],
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn LoadLibraryExW(file: *const u16, reserved: isize, flags: u32) -> isize;
+    fn FreeLibrary(h: isize) -> i32;
+    fn EnumResourceNamesW(h: isize, ty: *const u16, cb: unsafe extern "system" fn(isize, *const u16, *const u16, isize) -> i32, param: isize) -> i32;
+    fn FindResourceW(h: isize, name: *const u16, ty: *const u16) -> isize;
+    fn LoadResource(h: isize, res: isize) -> isize;
+    fn LockResource(g: isize) -> *const u8;
+    fn SizeofResource(h: isize, res: isize) -> u32;
+}
+
+/// RT_GROUP_ICON
+const GROUP_ICON: *const u16 = 14 as *const u16;
+
+/// Keeps the name of the first icon group (the one `PrivateExtractIconsW` index 0 reads)
+unsafe extern "system" fn first_group(_: isize, _: *const u16, name: *const u16, param: isize) -> i32 {
+    let out = &mut *(param as *mut Option<Vec<u16>>);
+    *out = Some(if (name as usize) < 0x10000 {
+        // a numbered resource: keep the number, marked by an empty string after it
+        vec![name as usize as u16, 0, 0]
+    } else {
+        let mut v = Vec::new();
+        let mut i = 0;
+        while *name.add(i) != 0 {
+            v.push(*name.add(i));
+            i += 1;
+        }
+        v.push(0);
+        v
+    });
+    0
+}
+
+/// The pixel sizes the file's main icon was drawn at, smallest first. The file is only opened
+/// as data: none of its code is loaded or run.
+fn native_sizes(path: &str) -> Vec<i32> {
+    let w = wide(path);
+    let mut out = Vec::new();
+    unsafe {
+        // LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE
+        let h = LoadLibraryExW(w.as_ptr(), 0, 0x2 | 0x20);
+        if h == 0 {
+            return out;
+        }
+        let mut name: Option<Vec<u16>> = None;
+        EnumResourceNamesW(h, GROUP_ICON, first_group, &mut name as *mut _ as isize);
+        if let Some(n) = name {
+            let id = if n.len() == 3 && n[1] == 0 && n[2] == 0 { n[0] as usize as *const u16 } else { n.as_ptr() };
+            let res = FindResourceW(h, id, GROUP_ICON);
+            let data = if res != 0 { LockResource(LoadResource(h, res)) } else { std::ptr::null() };
+            if !data.is_null() {
+                let d = std::slice::from_raw_parts(data, SizeofResource(h, res) as usize);
+                let count = d.get(4..6).map_or(0, |c| u16::from_le_bytes([c[0], c[1]]) as usize);
+                for i in 0..count {
+                    if let Some(&s) = d.get(6 + 14 * i) {
+                        out.push(if s == 0 { 256 } else { s as i32 });
+                    }
+                }
+            }
+        }
+        FreeLibrary(h);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 #[link(name = "user32")]
@@ -165,57 +237,86 @@ unsafe fn icon_image(icon: isize, size: i32) -> Option<ColorImage> {
     Some(ColorImage::from_rgba_unmultiplied([size as usize, size as usize], &rgba))
 }
 
-fn extract(path: &str, size: i32) -> Option<ColorImage> {
+/// The icon for a spot `want` pixels wide. Comes back at a size the file really has when one
+/// fits (up to a fifth smaller, drawn 1:1 and centred), else a bigger one scaled down here.
+fn extract(path: &str, want: i32) -> Option<ColorImage> {
     let w = wide(path);
+    let natives = native_sizes(path);
+    let fits = natives.iter().rev().find(|&&s| s <= want && s * 5 >= want * 4).copied();
+    let bigger = natives.iter().find(|&&s| s > want).copied();
+    let (size, scale_to) = match (fits, bigger, natives.last()) {
+        (Some(s), _, _) => (s, None),
+        (None, Some(b), _) => (b, Some(want)),
+        // every size it has is much smaller: show the biggest as it is
+        (None, None, Some(&l)) => (l, None),
+        (None, None, None) => (want, None),
+    };
     unsafe {
         let mut icon = 0isize;
         let mut id = 0u32;
         if PrivateExtractIconsW(w.as_ptr(), 0, size, size, &mut icon, &mut id, 1, 0) == 1 && icon != 0 {
-            return icon_image(icon, size);
+            let img = icon_image(icon, size)?;
+            return Some(match scale_to {
+                Some(n) => shrink(&img, n as usize),
+                None => img,
+            });
         }
         // No icon resource: the shell's icon for the file (the generic app icon)
         let mut sfi: SHFILEINFOW = std::mem::zeroed();
         if SHGetFileInfoW(w.as_ptr(), 0, &mut sfi, std::mem::size_of::<SHFILEINFOW>() as u32, 0x100) != 0 && sfi.hIcon != 0 {
-            return icon_image(sfi.hIcon, 32).map(|i| shrink(&i, size as usize));
+            return icon_image(sfi.hIcon, 32).map(|i| shrink(&i, want as usize));
         }
     }
     None
 }
 
-/// Box-filter down to `size` (SHGetFileInfo only hands out 32px)
+/// Scales down to `size`, each new pixel the exact average of the area it covers
 fn shrink(img: &ColorImage, size: usize) -> ColorImage {
     let s = img.size[0];
-    if size >= s {
+    if size >= s || size == 0 {
         return img.clone();
     }
+    // how much of source pixel `i` falls inside output pixel `o`, along one axis
+    let k = s as f32 / size as f32;
+    let span = |o: usize| -> Vec<(usize, f32)> {
+        let (a, b) = (o as f32 * k, (o + 1) as f32 * k);
+        (a.floor() as usize..(b.ceil() as usize).min(s)).map(|i| (i, (b.min(i as f32 + 1.0) - a.max(i as f32)).max(0.0))).collect()
+    };
+    let spans: Vec<_> = (0..size).map(span).collect();
     let mut out = vec![Color32::TRANSPARENT; size * size];
-    for y in 0..size {
-        for x in 0..size {
-            let (x0, x1, y0, y1) = (x * s / size, ((x + 1) * s / size).max(x * s / size + 1), y * s / size, ((y + 1) * s / size).max(y * s / size + 1));
-            let mut acc = [0u32; 4];
-            let mut n = 0;
-            for yy in y0..y1 {
-                for xx in x0..x1 {
+    for (y, sy) in spans.iter().enumerate() {
+        for (x, sx) in spans.iter().enumerate() {
+            let mut acc = [0f32; 4];
+            for &(yy, wy) in sy {
+                for &(xx, wx) in sx {
                     let c = img.pixels[yy * s + xx];
-                    acc[0] += c.r() as u32;
-                    acc[1] += c.g() as u32;
-                    acc[2] += c.b() as u32;
-                    acc[3] += c.a() as u32;
-                    n += 1;
+                    let wgt = wx * wy;
+                    acc[0] += c.r() as f32 * wgt;
+                    acc[1] += c.g() as f32 * wgt;
+                    acc[2] += c.b() as f32 * wgt;
+                    acc[3] += c.a() as f32 * wgt;
                 }
             }
-            out[y * size + x] = Color32::from_rgba_premultiplied((acc[0] / n) as u8, (acc[1] / n) as u8, (acc[2] / n) as u8, (acc[3] / n) as u8);
+            let n = k * k;
+            let q = |v: f32| (v / n).round().clamp(0.0, 255.0) as u8;
+            out[y * size + x] = Color32::from_rgba_premultiplied(q(acc[0]), q(acc[1]), q(acc[2]), q(acc[3]));
         }
     }
     ColorImage { size: [size, size], pixels: out }
 }
 
-/// Each icon is pulled out at the pixel size it is drawn at (one texture per size), so a big
-/// icon (the overlay's, more so when it is zoomed) is never a small one stretched
+/// Each icon is pulled out for the pixel size of the spot it is drawn in (one texture per
+/// size), so a big icon (the overlay's, more so when it is zoomed) is never a small one stretched
 type Key = (Arc<str>, i32);
 
-/// The pixel sizes icons are loaded at; a request uses the next one up
-const SIZES: [i32; 8] = [16, 20, 24, 32, 40, 48, 64, 96];
+/// Where a `px`-pixel texture goes to show pixel for pixel: centred in `r`, its corner on a
+/// whole screen pixel (half a pixel off would smear every edge)
+fn on_pixels(ppp: f32, r: Rect, px: usize) -> Rect {
+    let s = px as f32;
+    let c = r.center();
+    let min = egui::pos2((c.x * ppp - s / 2.0).round() / ppp, (c.y * ppp - s / 2.0).round() / ppp);
+    Rect::from_min_size(min, egui::vec2(s / ppp, s / ppp))
+}
 
 struct Cache {
     tex: HashMap<Key, Option<TextureHandle>>,
@@ -266,15 +367,16 @@ pub fn paint(ctx: &egui::Context, p: &Painter, r: Rect, name: &str, path: Option
         let tex = img.map(|img| ctx.load_texture(format!("icon:{}:{}", key.1, key.0), img, TextureOptions::LINEAR));
         c.tex.insert(key, tex);
     }
-    let want = (r.width() * ctx.pixels_per_point()).round() as i32;
-    let size = SIZES.into_iter().find(|s| *s >= want).unwrap_or(96);
+    let ppp = ctx.pixels_per_point();
+    let size = ((r.width() * ppp).round() as i32).clamp(8, 256);
     let key: Key = (path.clone(), size);
+    let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    let draw = |t: &TextureHandle| p.image(t.id(), on_pixels(ppp, r, t.size()[0]), uv, Color32::WHITE);
     // while the right size loads, any size already there beats the letter
     let loaded = |c: &Cache| c.tex.iter().find(|(k, t)| k.0 == *path && t.is_some()).and_then(|(_, t)| t.clone());
     match c.tex.get(&key) {
         Some(Some(t)) => {
-            let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            p.image(t.id(), r, uv, Color32::WHITE);
+            draw(t);
         }
         Some(None) => widgets::avatar(p, r, name),
         None => {
@@ -284,8 +386,7 @@ pub fn paint(ctx: &egui::Context, p: &Painter, r: Rect, name: &str, path: Option
             }
             match loaded(&c) {
                 Some(t) => {
-                    let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                    p.image(t.id(), r, uv, Color32::WHITE);
+                    draw(&t);
                 }
                 None => widgets::avatar(p, r, name),
             }

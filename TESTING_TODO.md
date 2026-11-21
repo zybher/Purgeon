@@ -28,10 +28,11 @@ and write down anything that looks wrong.
 - [ ] During that, look for a single-frame flash of the old window before the bar starts growing. If you see one, say so
 - [ ] With the bar on one screen and Purgeon on another, it should still look reasonable (the bar starts from the nearest edge of the window)
 - [ ] With Windows' animation effects off, the expand button just opens the window, with no morph
-- [ ] The System side's two rows read clearly: LOAD (how busy CPU, GPU, RAM are, plus download speed) and TEMP (how hot). CPU temperature shows "â€”" on purpose, since reading it needs a driver
+- [ ] The System side's two rows read clearly: LOAD (how busy CPU, GPU, RAM are, plus download speed) and TEMP (how hot). CPU temperature shows "—" on purpose, since reading it needs a driver
 
 ## Sharp text
 - [ ] Text in the window and the bar looks as crisp as other Windows apps next to it (no soft, smeared edges), and bold labels still look bold
+- [ ] App icons (Dashboard tiles, Processes, Free up memory, the bar) look as sharp as the same icons in Task Manager, Brave and Antigravity included
 - [ ] Text uses ClearType like the rest of Windows (very close up, letter edges have faint blue/orange tints, like in File Explorer). If it shows colour fringes on your screen, say so; turning ClearType off in Windows ("Adjust ClearType text") makes Purgeon use plain grey edges too
 
 ## Settings page
@@ -39,13 +40,13 @@ and write down anything that looks wrong.
 - [ ] Changing the size while the bar is open redraws it at the new size, and the text and the app icon stay sharp
 - [ ] At 125% and 150%, the expand button still reacts to the mouse (it lights up on hover) and opens Purgeon with the morph
 - [ ] Shortcut: click the Alt+Shift+P box, press Ctrl+Alt+O. It says "Saved", and Ctrl+Alt+O now opens the bar from a game. Alt+Shift+P no longer does
-- [ ] While the box says "Press the new keysâ€¦", pressing Alt+Shift+P doesn't open the bar
+- [ ] While the box says "Press the new keys…", pressing Alt+Shift+P doesn't open the bar
 - [ ] Pressing a single key, or Shift+a letter, is refused with a short reason; Esc or clicking elsewhere cancels
 - [ ] Reset brings back Alt+Shift+P, and the tray menu shows the current shortcut
 - [ ] The new shortcut still works after quitting and starting Purgeon again
 
 ## Boost an app (Dashboard)
-- [ ] Pick a game from "Choose an open appâ€¦" and click Boost. The card says "Priority raised" and "Power plan: High performance"
+- [ ] Pick a game from "Choose an open app…" and click Boost. The card says "Priority raised" and "Power plan: High performance"
 - [ ] While the game runs, Task Manager > Details > right-click the game > Set priority shows Above normal
 - [ ] Windows Settings > System > Power shows the High performance plan while the game runs (on some PCs only in Control Panel > Power Options)
 - [ ] Close the game: the power plan goes back to the one you had before
@@ -58,8 +59,8 @@ and write down anything that looks wrong.
 ## Free up memory (Dashboard)
 - [ ] Leave Purgeon open for 10+ minutes with apps you're not using (Discord, Steam, a second browser). They show up in the list
 - [ ] The app you're actively using never shows up there, and neither does a game that's running
-- [ ] Closeâ€¦ on an app with a window: it closes like you clicked its X (it may ask to save)
-- [ ] Closeâ€¦ on a tray-only app (Discord hidden in the tray): it ends, and the card says how much free memory changed
+- [ ] Close… on an app with a window: it closes like you clicked its X (it may ask to save)
+- [ ] Close… on a tray-only app (Discord hidden in the tray): it ends, and the card says how much free memory changed
 - [ ] Cancel in the confirm box really does nothing
 - [ ] An app you haven't touched since before Purgeon started says "idle 16+ min" (at least that long), not a time that looks exact
 - [ ] Quit and start Purgeon again right away: the idle times carry on instead of starting from zero
