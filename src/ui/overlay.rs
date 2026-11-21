@@ -9,8 +9,8 @@
 //! hooked onto the app below, so it is safe next to anti-cheat. It shows over borderless and
 //! windowed apps, not over exclusive fullscreen. While it is closed its window doesn't exist.
 //!
-//! FPS comes from the frame events DirectX already announces to Windows' event tracing (what
-//! PresentMon and the Xbox Game Bar read), so it doesn't touch the game either. Windows only
+//! FPS comes from the frame events DirectX and the graphics kernel already announce to Windows'
+//! event tracing (what PresentMon and the Xbox Game Bar read), so it doesn't touch the game either. Windows only
 //! lets administrators listen, so without that the cell says "Elevate for FPS".
 
 use super::morph::{self, Piece};
@@ -373,7 +373,7 @@ fn fps_box(p: &egui::Painter, r: Rect, pids: &[u32], text: &dyn Fn(Option<&'stat
         if s.drawing {
             note("Not a game: it only", "redraws on changes");
         } else {
-            note("No frames seen", "(DirectX games only)");
+            note("No frames seen", "(minimized or paused?)");
         }
         return;
     }

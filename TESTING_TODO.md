@@ -39,7 +39,7 @@ and write down anything that looks wrong.
 - [ ] Roblox launches and plays normally with Purgeon elevated and the bar open: no "third-party software" error, no kick
 - [ ] Alt-tab to the desktop with the bar open: FPS shows "—" for Explorer, then the game's number again when you go back
 - [ ] Task Manager: Purgeon's CPU stays about where it was before (well under 1%) while a game runs at high FPS
-- [ ] Vulkan or OpenGL games show "—" (expected: only DirectX games announce their frames this way)
+- [ ] A Vulkan or OpenGL game (or Roblox, whichever API it picks) also shows its FPS, matching its own counter
 
 ## Sharp text
 - [ ] Text in the window and the bar looks as crisp as other Windows apps next to it (no soft, smeared edges), and bold labels still look bold

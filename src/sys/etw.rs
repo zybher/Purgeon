@@ -43,6 +43,9 @@ const SESSION_GUID: Guid = Guid { d1: 0x5b1e_7c21, d2: 0x9a4f, d3: 0x4d0b, d4: [
 /// Microsoft-Windows-DXGI (Direct3D 10, 11, 12) and Microsoft-Windows-D3D9
 const DXGI: Guid = Guid { d1: 0xca11_c036, d2: 0x0102, d3: 0x4a2d, d4: [0xa6, 0xad, 0xf0, 0x3c, 0xfe, 0xd5, 0xd3, 0xc9] };
 const D3D9: Guid = Guid { d1: 0x783a_ca0a, d2: 0x790e, d3: 0x4d7f, d4: [0x84, 0x51, 0xaa, 0x85, 0x05, 0x11, 0xc6, 0xb9] };
+/// Microsoft-Windows-DxgKrnl: the graphics kernel, which sees every frame shown, whatever API
+/// drew it (Vulkan and OpenGL included)
+const DXGKRNL: Guid = Guid { d1: 0x802e_c45a, d2: 0x1e99, d3: 0x4b83, d4: [0x99, 0x20, 0x87, 0xc9, 0x82, 0x77, 0xba, 0x9d] };
 /// The frame session's own GUID
 const FRAME_GUID: Guid = Guid { d1: 0x7c2d_41e8, d2: 0x5b93, d3: 0x4f0a, d4: [0x9e, 0x17, 0x6a, 0xc4, 0x02, 0xb8, 0x3d, 0x5f] };
 const FRAME_SESSION: &str = "Purgeon Frame Trace";
@@ -59,6 +62,8 @@ const EVENT_TRACE_FLAG_NETWORK_TCPIP: u32 = 0x1_0000;
 const EVENT_TRACE_CONTROL_STOP: u32 = 1;
 const PROCESS_TRACE_MODE_REAL_TIME: u32 = 0x100;
 const PROCESS_TRACE_MODE_EVENT_RECORD: u32 = 0x1000_0000;
+/// Hand timestamps over as QueryPerformanceCounter ticks, not converted to wall-clock time
+const PROCESS_TRACE_MODE_RAW_TIMESTAMP: u32 = 0x1000;
 const ERROR_ALREADY_EXISTS: u32 = 183;
 const INVALID_TRACE: u64 = u64::MAX;
 
@@ -406,22 +411,36 @@ impl DiskTrace {
 static FRAMES: AtomicU8 = AtomicU8::new(0);
 static QPC_FREQ: AtomicI64 = AtomicI64::new(1);
 
-/// When each process showed its recent frames (QPC ticks), the last few seconds only
-fn shown() -> &'static Mutex<HashMap<u32, VecDeque<i64>>> {
-    static S: OnceLock<Mutex<HashMap<u32, VecDeque<i64>>>> = OnceLock::new();
+/// When each process showed its recent frames (QPC ticks), the last few seconds only, kept
+/// apart by which event told us (0 = DirectX's own; 1.. = the graphics kernel's), since one
+/// frame can raise several of them and mixing them would count it twice
+fn shown() -> &'static Mutex<HashMap<(u32, u8), VecDeque<i64>>> {
+    static S: OnceLock<Mutex<HashMap<(u32, u8), VecDeque<i64>>>> = OnceLock::new();
     S.get_or_init(Default::default)
 }
 
 unsafe extern "system" fn on_frame(r: *const EventRecord) {
     let r = &*r;
-    // DXGI Present_Start (42) and PresentMultiplaneOverlay_Start (55); D3D9 Present_Start (1)
-    let frame = (r.provider == DXGI && (r.id == 42 || r.id == 55)) || (r.provider == D3D9 && r.id == 1);
-    if !frame {
+    // DXGI Present_Start (42) and PresentMultiplaneOverlay_Start (55); D3D9 Present_Start (1).
+    // From the kernel, raised in the presenting process: Present (184), PresentHistory and
+    // PresentHistoryDetailed starts (171, 215), Flip (168), FlipMultiPlaneOverlay (252)
+    let kind = if (r.provider == DXGI && (r.id == 42 || r.id == 55)) || (r.provider == D3D9 && r.id == 1) {
+        0
+    } else if r.provider == DXGKRNL {
+        match (r.id, r.opcode) {
+            (184, _) => 1,
+            (171, 1) => 2,
+            (215, 1) => 3,
+            (168, _) => 4,
+            (252, _) => 5,
+            _ => return,
+        }
+    } else {
         return;
-    }
+    };
     let keep = 3 * QPC_FREQ.load(Ordering::Relaxed);
     let Ok(mut s) = shown().lock() else { return };
-    let q = s.entry(r.process_id).or_default();
+    let q = s.entry((r.process_id, kind)).or_default();
     q.push_back(r.timestamp);
     while q.front().is_some_and(|&t| t < r.timestamp - keep) || q.len() > 4000 {
         q.pop_front();
@@ -457,16 +476,19 @@ fn start_frames() -> bool {
         return false;
     }
     // EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, every keyword
-    let a = unsafe { EnableTraceEx2(h, &DXGI, 1, 4, u64::MAX, 0, 0, std::ptr::null()) };
+    // DXGI only its frame-timing keyword (0x2), not the per-call API trace; DxgKrnl only "Present"
+    let a = unsafe { EnableTraceEx2(h, &DXGI, 1, 4, 0x2, 0, 0, std::ptr::null()) };
     let b = unsafe { EnableTraceEx2(h, &D3D9, 1, 4, u64::MAX, 0, 0, std::ptr::null()) };
-    if a != 0 && b != 0 {
+    let c = unsafe { EnableTraceEx2(h, &DXGKRNL, 1, 4, 0x800_0000, 0, 0, std::ptr::null()) };
+    if a != 0 && b != 0 && c != 0 {
         stop_frames();
         return false;
     }
     let wname: &'static [u16] = Box::leak(wide(FRAME_SESSION).into_boxed_slice());
     let mut lf: LogFile = unsafe { std::mem::zeroed() };
     lf.logger_name = wname.as_ptr();
-    lf.process_trace_mode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
+    // raw timestamps: frame_stats compares them with QueryPerformanceCounter
+    lf.process_trace_mode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD | PROCESS_TRACE_MODE_RAW_TIMESTAMP;
     lf.event_record_callback = Some(on_frame);
     let th = unsafe { OpenTraceW(&mut lf) };
     if th == INVALID_TRACE {
@@ -513,7 +535,7 @@ pub struct FrameStats {
 }
 
 struct Session {
-    pid: u32,
+    pid: (u32, u8),
     /// Frames up to this QPC time are already counted
     mark: i64,
     prev: Option<i64>,
@@ -548,7 +570,12 @@ pub fn frame_stats(pids: &[u32]) -> FrameStats {
     let (pid, times) = {
         let Ok(mut s) = shown().lock() else { return FrameStats::default() };
         s.retain(|_, q| q.back().is_some_and(|&t| (now - t) as f64 <= 5.0 * f));
-        let pick = pids.iter().filter_map(|p| s.get(p).map(|q| (*p, q.len()))).max_by_key(|x| x.1);
+        // DirectX's own events when the app has them, else the kernel's busiest kind
+        let pick = s
+            .iter()
+            .filter(|(k, _)| pids.contains(&k.0))
+            .map(|(k, q)| (*k, q.len()))
+            .max_by_key(|&(k, n)| (k.1 == 0, n));
         let Some((pid, _)) = pick else { return FrameStats::default() };
         let mut t: Vec<i64> = s[&pid].iter().copied().filter(|&t| t <= cut).collect();
         t.sort_unstable();
