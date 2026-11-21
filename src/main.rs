@@ -21,6 +21,11 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
     #[cfg(feature = "bench")]
+    if std::env::args().any(|a| a == "--memprobe") {
+        sys::bench::memprobe();
+        return Ok(());
+    }
+    #[cfg(feature = "bench")]
     if std::env::args().any(|a| a == "--bench-mem") {
         sys::bench::run_mem();
         return Ok(());

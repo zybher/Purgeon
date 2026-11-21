@@ -54,6 +54,7 @@ pub struct App {
     shot: Option<crate::shot::Shot>,
     trimmed: bool,
     was_focused: bool,
+    was_minimized: bool,
     /// The UAC prompt was declined: show a dismissible note
     uac_note: bool,
     /// Snapshots seen, to evict dead programs' icons now and then
@@ -76,6 +77,7 @@ impl App {
             shot: crate::shot::Shot::from_env(),
             trimmed: false,
             was_focused: true,
+            was_minimized: false,
             uac_note: false,
             snaps: 0,
         }
@@ -272,13 +274,17 @@ impl eframe::App for App {
         // Minimized: the sampler keeps going but stops waking the UI
         let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
         self.shared.visible.store(!minimized, Ordering::Relaxed);
-        // Trim once startup is over, and again whenever the window loses focus (Tangra's trick)
+        // Give back memory only needed while starting (the GPU sensor library alone takes ~19 MB
+        // to start), and again whenever the window loses focus or is minimized. The startup trim
+        // runs even if focus was lost first, e.g. when Windows opens the app behind other windows.
         let focused = ctx.input(|i| i.focused);
-        if (!self.trimmed && self.page_at.elapsed().as_secs_f32() > 2.0 && self.snap.is_some()) || (self.was_focused && !focused) {
-            self.trimmed = true;
+        let startup = !self.trimmed && self.page_at.elapsed().as_secs_f32() > 2.0 && self.snap.is_some();
+        if startup || (self.was_focused && !focused) || (minimized && !self.was_minimized) {
+            self.trimmed |= startup;
             crate::platform::trim_memory();
         }
         self.was_focused = focused;
+        self.was_minimized = minimized;
         if !self.dwm_done {
             self.dwm_done = crate::platform::style_window();
             if !self.dwm_done {

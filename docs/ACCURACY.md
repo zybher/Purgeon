@@ -214,7 +214,12 @@ Idle, 20 samples at 1 s:
 | Time per update (ms) | 12.6 | 16.8 |
 | Purgeon's own CPU, sampler only (%) | 0.066 | 0.073 |
 
-Purgeon with its window open used about 51 MB of private working set.
+Purgeon with its window open used about 51 MB of private working set during these runs. That
+was a bug: the clean-up that hands back startup memory was skipped when the window opened
+without focus. With it fixed, Purgeon holds about 33 MB of RAM open (23 MB private) and about
+27 MB minimized, measured after two minutes. Most of what remains reserved but out of RAM is
+NVIDIA's sensor library, which sets aside about 19 MB when it starts; it is only needed for
+GPU temperature, clocks, power and fan.
 
 **What this shows.** On this machine Purgeon is as accurate as Windows' own counters, not more.
 Both stay within 2% of a known CPU load. Purgeon reads slightly high and the Windows counter

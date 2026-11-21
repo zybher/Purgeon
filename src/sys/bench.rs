@@ -354,6 +354,93 @@ pub fn run_mem() {
     println!("{out}");
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct MemCounters {
+    cb: u32,
+    faults: u32,
+    peak_ws: usize,
+    ws: usize,
+    qpp: [usize; 4],
+    pagefile: usize,
+    peak_pagefile: usize,
+    private: usize,
+}
+#[link(name = "kernel32")]
+extern "system" {
+    fn K32GetProcessMemoryInfo(p: isize, c: *mut MemCounters, cb: u32) -> i32;
+    fn GetCurrentProcess() -> isize;
+}
+/// (private bytes, working set) of this process in MB
+fn own_mem() -> (f64, f64) {
+    let mut c = MemCounters { cb: std::mem::size_of::<MemCounters>() as u32, ..Default::default() };
+    unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+    (c.private as f64 / 1048576.0, c.ws as f64 / 1048576.0)
+}
+
+/// `--memprobe`: what each part of the sampler adds to private bytes and working set
+pub fn memprobe() {
+    let mut last = own_mem();
+    let mut step = |name: &str| {
+        let now = own_mem();
+        println!("{name:<28} private {:>6.1} MB (+{:>5.1})   ws {:>6.1} MB (+{:>5.1})", now.0, now.0 - last.0, now.1, now.1 - last.1);
+        last = now;
+    };
+    step("start");
+    let mut ck = clock::ClockSampler::new(2100);
+    for _ in 0..3 {
+        if let Some(c) = ck.as_mut() {
+            c.sample();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    step("clock (PDH processor)");
+    let mut dk = disk::DiskSampler::new();
+    for _ in 0..3 {
+        if let Some(d) = dk.as_mut() {
+            d.sample();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    step("disk (PDH PhysicalDisk)");
+    let mut gp = gpu::GpuSampler::new();
+    for _ in 0..3 {
+        if let Some(g) = gp.as_mut() {
+            g.sample();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    step("gpu (PDH GPU*, DXGI, NVML)");
+    let mut ns = net::NetSampler::default();
+    for _ in 0..3 {
+        ns.adapters(0.3);
+        ns.connections();
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    step("net (iphlpapi)");
+    let mut th = thermal::ThermalSampler::new();
+    for _ in 0..3 {
+        if let Some(t) = th.as_mut() {
+            t.sample();
+        }
+    }
+    step("thermal (PDH)");
+    drop((ck, dk, gp, ns, th));
+    step("dropped the above");
+    let mut c = Collector::new();
+    step("Collector::new");
+    for _ in 0..10 {
+        c.sample(1.0);
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    step("Collector, 10 samples");
+    for _ in 0..30 {
+        c.sample(1.0);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    step("Collector, 40 samples");
+}
+
 pub fn run(secs: u32) {
     let mut q = pdh::Query::new().expect("PDH");
     let time = q.add(r"\Processor Information(_Total)\% Processor Time");

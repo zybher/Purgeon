@@ -24,7 +24,7 @@ not beat them.** What it adds is detail in one place, not better numbers.
 | Per-process disk | Includes cached and network I/O | Same as Task Manager; as administrator, physical disk I/O only, from a kernel trace | Standard user: 256 of 256 MB, same as Task Manager. Administrator mode not tested yet |
 | Per-process network | Not shown (Resource Monitor only) | As administrator: download and upload per program from the same kernel trace; open connections per program without admin | Not tested yet |
 | Disk response time and queue | Per drive, across Task Manager and Resource Monitor | Per drive, all in one view | Same counters, no separate test |
-| Own cost | Not measured here | About 51 MB of RAM with the window open; the sampler uses 0.07% CPU and 13 ms per update | Measured |
+| Own cost | Not measured here | About 33 MB of RAM with the window open (23 MB of it only Purgeon's), about 27 MB minimized; the sampler uses 0.07% CPU and 13 ms per update | Measured |
 
 ## Keyboard
 
