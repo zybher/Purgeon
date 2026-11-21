@@ -67,6 +67,7 @@ extern "system" {
     fn DispatchMessageW(m: *const Msg) -> isize;
     fn PostMessageW(h: isize, m: u32, w: usize, l: isize) -> i32;
     fn SetForegroundWindow(h: isize) -> i32;
+    fn RegisterHotKey(h: isize, id: i32, mods: u32, vk: u32) -> i32;
     fn RegisterWindowMessageW(name: *const u16) -> u32;
     fn ChangeWindowMessageFilterEx(h: isize, m: u32, action: u32, info: *mut c_void) -> i32;
     fn CreatePopupMenu() -> isize;
@@ -94,8 +95,52 @@ extern "system" {
 const WM_APP: u32 = 0x8000;
 /// The icon's clicks arrive as this message
 const WM_TRAY: u32 = WM_APP + 1;
-/// Sent by a second copy of Purgeon (wparam 0: show the window) or a test script (1: quit)
+/// Sent by a second copy of Purgeon (wparam 0: show the window) or a test script (1: quit,
+/// 2: open or close the overlay)
 const WM_COMMAND_PURGEON: u32 = WM_APP + 2;
+const WM_HOTKEY: u32 = 0x0312;
+/// The overlay's shortcut when settings.ini doesn't name another one (`overlay_key=...`)
+const DEFAULT_KEY: &str = "Alt+Shift+P";
+
+/// The overlay shortcut as typed in settings.ini ("Ctrl+Alt+O", "Alt+Shift+F2"), as
+/// RegisterHotKey's modifiers and virtual key
+fn parse_key(s: &str) -> Option<(u32, u32)> {
+    let mut mods = 0x4000; // MOD_NOREPEAT
+    let mut vk = None;
+    for part in s.split('+').map(|p| p.trim().to_ascii_uppercase()) {
+        match part.as_str() {
+            "ALT" => mods |= 1,
+            "CTRL" | "CONTROL" => mods |= 2,
+            "SHIFT" => mods |= 4,
+            "WIN" => mods |= 8,
+            k if k.len() == 1 && k.chars().all(|c| c.is_ascii_alphanumeric()) => vk = Some(k.as_bytes()[0] as u32),
+            k if k.starts_with('F') => {
+                let n: u32 = k[1..].parse().ok()?;
+                if !(1..=24).contains(&n) {
+                    return None;
+                }
+                vk = Some(0x6F + n);
+            }
+            _ => return None,
+        }
+    }
+    // a bare key would steal it from every app
+    if mods & 0xF == 0 {
+        return None;
+    }
+    Some((mods, vk?))
+}
+
+/// The overlay shortcut, as shown in the tray menu
+pub fn overlay_key() -> String {
+    crate::settings::text("overlay_key").filter(|k| parse_key(k).is_some()).unwrap_or_else(|| DEFAULT_KEY.to_string())
+}
+
+fn toggle_overlay() {
+    if let Some((_, ctx)) = APP.get() {
+        crate::ui::overlay::toggle(ctx);
+    }
+}
 const WM_LBUTTONUP: isize = 0x0202;
 const WM_RBUTTONUP: isize = 0x0205;
 const NIN_BALLOONUSERCLICK: isize = 0x0405;
@@ -188,6 +233,18 @@ unsafe fn run() {
         return;
     }
     HWND.store(h, Ordering::Relaxed);
+    // The overlay shortcut. RegisterHotKey only gets told about that one key combination; it
+    // doesn't watch the keyboard, so it is safe next to anti-cheat.
+    let key = overlay_key();
+    if let Some((mods, vk)) = parse_key(&key) {
+        if RegisterHotKey(h, 1, mods, vk) == 0 {
+            notify(
+                "The overlay shortcut is taken",
+                &format!("Another app already uses {key}. You can still open the overlay from Purgeon's tray icon."),
+                false,
+            );
+        }
+    }
     let mut msg: Msg = std::mem::zeroed();
     while GetMessageW(&mut msg, 0, 0, 0) > 0 {
         TranslateMessage(&msg);
@@ -268,6 +325,7 @@ pub fn show_window() {
 const ID_OPEN: usize = 1;
 const ID_ALERTS: usize = 2;
 const ID_QUIT: usize = 3;
+const ID_OVERLAY: usize = 4;
 
 unsafe fn menu(h: isize) {
     let m = CreatePopupMenu();
@@ -276,6 +334,8 @@ unsafe fn menu(h: isize) {
     }
     // MF_STRING 0, MF_CHECKED 8, MF_SEPARATOR 0x800
     AppendMenuW(m, 0, ID_OPEN, wide("Open Purgeon").as_ptr());
+    let ov = if crate::ui::overlay::is_open() { "Hide overlay" } else { "Show overlay" };
+    AppendMenuW(m, 0, ID_OVERLAY, wide(&format!("{ov}\t{}", overlay_key())).as_ptr());
     AppendMenuW(m, if crate::alerts::enabled() { 8 } else { 0 }, ID_ALERTS, wide("Warn me when something's wrong").as_ptr());
     AppendMenuW(m, 0x800, 0, std::ptr::null());
     AppendMenuW(m, 0, ID_QUIT, wide("Quit Purgeon").as_ptr());
@@ -290,6 +350,7 @@ unsafe fn menu(h: isize) {
     DestroyMenu(m);
     match cmd {
         ID_OPEN => show_window(),
+        ID_OVERLAY => toggle_overlay(),
         ID_ALERTS => crate::alerts::set_enabled(!crate::alerts::enabled()),
         ID_QUIT => crate::quit(),
         _ => {}
@@ -305,9 +366,17 @@ unsafe extern "system" fn wnd_proc(h: isize, m: u32, w: usize, l: isize) -> isiz
         }
         return 0;
     }
+    if m == WM_HOTKEY {
+        toggle_overlay();
+        return 0;
+    }
     if m == WM_COMMAND_PURGEON {
         if w == 1 {
             crate::quit();
+        }
+        if w == 2 {
+            toggle_overlay();
+            return 0;
         }
         show_window();
         return 0;

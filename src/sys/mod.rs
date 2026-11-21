@@ -210,7 +210,7 @@ pub fn start(ctx: eframe::egui::Context, mut on_sample: impl FnMut(&Snapshot) + 
                     *l = Some(Arc::new(snap));
                 }
                 // The UI draws only when there is new data (or the user moves something)
-                if s.visible.load(Ordering::Relaxed) {
+                if s.visible.load(Ordering::Relaxed) || crate::ui::overlay::is_open() {
                     ctx.request_repaint();
                 }
                 let el = t0.elapsed();

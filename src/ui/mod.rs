@@ -1,6 +1,7 @@
 //! The window: title bar, sidebar, and the page area.
 
 mod graph;
+pub mod overlay;
 mod pages;
 mod icons;
 mod table;
@@ -288,6 +289,7 @@ impl eframe::App for App {
             }
             self.snap = Some(s);
         }
+        overlay::show(ctx, self.snap.as_deref());
         if self.shared.hidden.load(Ordering::Relaxed) {
             // In the tray: draw nothing and ask for nothing, until the tray shows the window
             return;

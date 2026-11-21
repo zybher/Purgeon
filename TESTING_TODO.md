@@ -14,6 +14,17 @@ and write down anything that looks wrong.
 - [ ] Starting Purgeon again while it's in the tray opens the running copy and doesn't start a second one
 - [ ] The tray icon comes back after Explorer restarts (Task Manager > Windows Explorer > Restart)
 
+## Overlay
+- [ ] Alt+Shift+P slides the bar down from the top of the screen, and pressing it again slides it back up
+- [ ] It shows the app you're using: try a game (borderless or windowed), Blender and a browser
+- [ ] The game keeps focus while the bar is open: your keys and mouse still go to the game
+- [ ] Clicking the expand button at the far right opens the full Purgeon window
+- [ ] The tray menu's "Show overlay" item works
+- [ ] With two monitors, the bar appears on the screen of the app you're using
+- [ ] In exclusive fullscreen games the bar doesn't show (expected). Switching the game to borderless makes it show
+- [ ] The RAM number for a game looks right next to the Processes page
+- [ ] With Windows' animation effects turned off, the bar appears instantly, with no slide
+
 ## Elevate (administrator mode)
 - [ ] Clicking Elevate and approving UAC restarts Purgeon as administrator
 - [ ] Disk page: the per-app disk speeds show up

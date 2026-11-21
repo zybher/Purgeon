@@ -25,6 +25,11 @@ pub fn flag(key: &str, default: bool) -> bool {
     with(|m| m.get(key).map_or(default, |v| v == "on"))
 }
 
+/// A text setting, if it was set
+pub fn text(key: &str) -> Option<String> {
+    with(|m| m.get(key).cloned())
+}
+
 pub fn set_flag(key: &str, on: bool) {
     let text = with(|m| {
         m.insert(key.to_string(), if on { "on" } else { "off" }.to_string());

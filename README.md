@@ -46,6 +46,21 @@ Each warning shows once, and only again after the problem has gone away and some
 warning every two minutes. Focus Assist / Do Not Disturb holds them back like any other
 notification. The on/off choice is saved in `%APPDATA%\Purgeon\settings.ini`.
 
+## Overlay
+
+Press **Alt+Shift+P** anywhere to slide a slim bar down from the top of the screen, and press
+it again to slide it away. It works from the tray too.
+
+On the left it shows the app you're using (a game, Blender, a browser, anything): how much RAM,
+VRAM, CPU and GPU it takes, its helper processes included. On the right, smaller, the whole PC:
+CPU, GPU temperature, RAM and network, which turn amber or red only when something's wrong. The
+button at the far right opens Purgeon.
+
+The bar is a normal always-on-top window that never takes focus. Nothing is added to or hooked
+into the game, so it's safe with anti-cheat, but it can't show an FPS counter, and it can't
+appear over exclusive fullscreen games (borderless and windowed are fine). To use another
+shortcut, put a line like `overlay_key=Ctrl+Alt+O` in `%APPDATA%\Purgeon\settings.ini`.
+
 ## Keyboard
 
 On the Processes page: start typing to filter, arrow keys move the selection, Delete ends the

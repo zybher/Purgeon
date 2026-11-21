@@ -20,23 +20,35 @@ pub fn main_window() -> isize {
     if h != 0 && unsafe { IsWindow(h) } != 0 {
         return h;
     }
-    unsafe extern "system" fn each(h: isize, _: isize) -> i32 {
+    let h = find_window(crate::TITLE);
+    MAIN.store(h, Ordering::Relaxed);
+    h
+}
+
+/// A top-level window of this process with exactly this title, 0 if there is none
+pub fn find_window(title: &str) -> isize {
+    struct Find<'a> {
+        title: &'a str,
+        found: isize,
+    }
+    unsafe extern "system" fn each(h: isize, l: isize) -> i32 {
+        let f = &mut *(l as *mut Find);
         let mut pid = 0u32;
         GetWindowThreadProcessId(h, &mut pid);
         if pid != std::process::id() {
             return 1;
         }
-        let mut buf = [0u16; 32];
+        let mut buf = [0u16; 64];
         let n = GetWindowTextW(h, buf.as_mut_ptr(), buf.len() as i32).max(0) as usize;
-        if String::from_utf16_lossy(&buf[..n]) == crate::TITLE {
-            MAIN.store(h, Ordering::Relaxed);
+        if String::from_utf16_lossy(&buf[..n]) == f.title {
+            f.found = h;
             return 0;
         }
         1
     }
-    MAIN.store(0, Ordering::Relaxed);
-    unsafe { EnumWindows(each, 0) };
-    MAIN.load(Ordering::Relaxed)
+    let mut f = Find { title, found: 0 };
+    unsafe { EnumWindows(each, &mut f as *mut Find as isize) };
+    f.found
 }
 
 #[repr(C)]
@@ -136,6 +148,18 @@ pub fn style_window() -> bool {
         win::DwmSetWindowAttribute(h, 34, &border as *const u32 as _, 4);
     }
     true
+}
+
+/// Dark rounded corners and border for a small borderless window such as the overlay
+pub fn style_popup(h: isize) {
+    unsafe {
+        let on: u32 = 1;
+        win::DwmSetWindowAttribute(h, 20, &on as *const u32 as _, 4);
+        let round: u32 = 2;
+        win::DwmSetWindowAttribute(h, 33, &round as *const u32 as _, 4);
+        let border: u32 = 0x00333333;
+        win::DwmSetWindowAttribute(h, 34, &border as *const u32 as _, 4);
+    }
 }
 
 /// The app icon (chip on a dark tile) for the window and taskbar. Pre-rendered from
