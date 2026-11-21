@@ -17,7 +17,8 @@ use widgets::Icon;
 
 const TITLE_H: f32 = 40.0;
 const SIDE_W: f32 = 212.0;
-const INTERVALS: [(&str, u32); 3] = [("0.5s", 500), ("1s", 1000), ("2s", 2000)];
+/// Update speeds; 0 ms = paused
+const INTERVALS: [(&str, u32); 4] = [("0.5s", 500), ("1s", 1000), ("2s", 2000), ("Pause", 0)];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -51,11 +52,17 @@ pub struct App {
     shot: Option<crate::shot::Shot>,
     trimmed: bool,
     was_focused: bool,
+    /// The UAC prompt was declined: show a dismissible note
+    uac_note: bool,
+    /// Snapshots seen, to evict dead programs' icons now and then
+    snaps: u64,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext) -> Self {
-        setup_style(&cc.egui_ctx);
+        let reduced = crate::platform::reduce_motion();
+        crate::anim::set_reduced(reduced);
+        setup_style(&cc.egui_ctx, reduced);
         App {
             shared: sys::start(cc.egui_ctx.clone()),
             snap: None,
@@ -63,10 +70,12 @@ impl App {
             page_at: Instant::now(),
             interval: 1,
             dwm_done: false,
-            table: table::TableState::default(),
+            table: table::TableState::from_args(),
             shot: crate::shot::Shot::from_env(),
             trimmed: false,
             was_focused: true,
+            uac_note: false,
+            snaps: 0,
         }
     }
 
@@ -96,7 +105,14 @@ impl App {
 
         // Live readout in the middle of the bar
         if let Some(s) = &self.snap {
-            let t = format!("CPU {:.0}%   ·   RAM {:.0}%   ·   {} processes", s.cpu, s.mem.used_frac() * 100.0, s.nprocs);
+            let paused = self.shared.interval_ms.load(Ordering::Relaxed) == 0;
+            let t = format!(
+                "CPU {:.0}%   ·   RAM {:.0}%   ·   {} processes{}",
+                s.cpu,
+                s.mem.used_frac() * 100.0,
+                s.nprocs,
+                if paused { "   ·   Paused" } else { "" }
+            );
             p.text(pos2(rect.center().x, cy), Align2::CENTER_CENTER, t, reg(12.0), txt_faint());
         }
 
@@ -219,9 +235,15 @@ impl App {
                 ctx.set_cursor_icon(CursorIcon::PointingHand);
             }
             let resp = resp.on_hover_text("Restart Purgeon as administrator to unlock per-process physical disk activity, memory lists and protected processes.");
-            if resp.clicked() && crate::platform::relaunch_as_admin() {
-                crate::sys::etw::stop();
-                std::process::exit(0);
+            if resp.clicked() {
+                // the elevated copy opens on the same page with the same table sort
+                let mut state = vec![format!("--page={}", page_name(self.page))];
+                state.extend(self.table.state_args());
+                if crate::platform::relaunch_as_admin(&state) {
+                    crate::sys::etw::stop();
+                    std::process::exit(0);
+                }
+                self.uac_note = true;
             }
         }
     }
@@ -239,8 +261,16 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(s) = self.shared.take() {
+            self.snaps += 1;
+            if self.snaps % 30 == 0 {
+                let live: std::collections::HashSet<&str> = s.procs.iter().filter_map(|p| p.path.as_deref()).collect();
+                icons::retain(ctx, &live);
+            }
             self.snap = Some(s);
         }
+        // Minimized: the sampler keeps going but stops waking the UI
+        let minimized = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+        self.shared.visible.store(!minimized, Ordering::Relaxed);
         // Trim once startup is over, and again whenever the window loses focus (Tangra's trick)
         let focused = ctx.input(|i| i.focused);
         if (!self.trimmed && self.page_at.elapsed().as_secs_f32() > 2.0 && self.snap.is_some()) || (self.was_focused && !focused) {
@@ -255,7 +285,7 @@ impl eframe::App for App {
             }
         }
         // How far the newest sample has slid into the graphs
-        let scroll = self.snap.as_ref().map_or(1.0, |s| (s.at.elapsed().as_secs_f32() / 0.35).min(1.0));
+        let scroll = if crate::anim::reduced() { 1.0 } else { self.snap.as_ref().map_or(1.0, |s| (s.at.elapsed().as_secs_f32() / 0.35).min(1.0)) };
         if scroll < 1.0 {
             ctx.request_repaint();
         }
@@ -276,7 +306,7 @@ impl eframe::App for App {
             ));
 
             // Page entrance: fade in and rise a few points
-            let t = egui::emath::easing::cubic_out((self.page_at.elapsed().as_secs_f32() / 0.28).min(1.0));
+            let t = if crate::anim::reduced() { 1.0 } else { egui::emath::easing::cubic_out((self.page_at.elapsed().as_secs_f32() / 0.28).min(1.0)) };
             if t < 1.0 {
                 ctx.request_repaint();
             }
@@ -311,6 +341,9 @@ impl eframe::App for App {
                         self.go(pg);
                     }
                 }
+            }
+            if self.uac_note {
+                self.uac_note = uac_note(ctx, content);
             }
         });
         resize_edges(ctx);
@@ -358,9 +391,48 @@ fn resize_edges(ctx: &egui::Context) {
     }
 }
 
-fn setup_style(ctx: &egui::Context) {
+/// Shown after the UAC prompt was declined. Returns false once dismissed.
+fn uac_note(ctx: &egui::Context, content: Rect) -> bool {
+    let mut keep = true;
+    let w = (content.width() - 56.0).min(520.0);
+    let r = Rect::from_center_size(pos2(content.center().x, content.max.y - 34.0), vec2(w, 40.0));
+    egui::Area::new(egui::Id::new("uac_note")).order(egui::Order::Foreground).fixed_pos(r.min).show(ctx, |ui| {
+        let (r, _) = ui.allocate_exact_size(r.size(), Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(r.translate(vec2(0.0, 2.0)), 11.0, Color32::from_black_alpha(70));
+        p.rect_filled(r, 11.0, Color32::from_gray(0x26));
+        p.rect_stroke(r, 11.0, Stroke::new(1.0_f32, border()));
+        p.circle_filled(pos2(r.min.x + 18.0, r.center().y), 3.5, WARN_COL);
+        widgets::fit(
+            p,
+            pos2(r.min.x + 30.0, r.center().y),
+            Align2::LEFT_CENTER,
+            "Administrator mode wasn't started. Purgeon keeps running as a standard user.",
+            reg(12.5),
+            r.width() - 72.0,
+            txt(),
+        );
+        let cr = Rect::from_center_size(pos2(r.max.x - 20.0, r.center().y), vec2(24.0, 24.0));
+        let resp = ui.interact(cr, egui::Id::new("uac_note_x"), Sense::click());
+        let (h, _) = hover_fx(ctx, &resp);
+        p.circle_filled(cr.center(), 11.0, wa((h * 20.0) as u8));
+        let c = cr.center();
+        let st = Stroke::new(1.2_f32, mix(txt_dim(), hi(), h));
+        p.line_segment([c + vec2(-3.5, -3.5), c + vec2(3.5, 3.5)], st);
+        p.line_segment([c + vec2(3.5, -3.5), c + vec2(-3.5, 3.5)], st);
+        if resp.clicked() {
+            keep = false;
+        }
+    });
+    keep
+}
+
+fn setup_style(ctx: &egui::Context, reduced: bool) {
     let mut fonts = egui::FontDefinitions::default();
-    if let Ok(bytes) = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf") {
+    // Segoe UI Variable (Windows 11) where present, else Segoe UI. Both draw digits with equal
+    // widths by default, so numbers don't jiggle as they change.
+    let regular = std::fs::read("C:\\Windows\\Fonts\\SegUIVar.ttf").or_else(|_| std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf"));
+    if let Ok(bytes) = regular {
         fonts.font_data.insert("segoe".into(), egui::FontData::from_owned(bytes));
         if let Some(f) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
             f.insert(0, "segoe".into());
@@ -409,12 +481,25 @@ fn setup_style(ctx: &egui::Context) {
     for (style, size) in [(egui::TextStyle::Body, 13.0), (egui::TextStyle::Button, 13.0), (egui::TextStyle::Small, 11.0), (egui::TextStyle::Heading, 20.0)] {
         st.text_styles.insert(style, egui::FontId::proportional(size));
     }
-    st.animation_time = 0.14;
+    // Reduce motion (Windows "Animation effects" off): no animated transitions at all
+    st.animation_time = if reduced { 0.0 } else { 0.14 };
     ctx.set_theme(egui::ThemePreference::Dark);
     ctx.all_styles_mut(|s| *s = st.clone());
 }
 
-/// `--page=cpu` (overview, processes, cpu, memory, gpu, sensors) opens on that page
+fn page_name(p: Page) -> &'static str {
+    match p {
+        Page::Overview => "overview",
+        Page::Processes => "processes",
+        Page::Cpu => "cpu",
+        Page::Memory => "memory",
+        Page::Disk => "disk",
+        Page::Gpu => "gpu",
+        Page::Sensors => "sensors",
+    }
+}
+
+/// `--page=cpu` (overview, processes, cpu, memory, disk, gpu, sensors) opens on that page
 fn start_page() -> Page {
     let arg = std::env::args().find_map(|a| a.strip_prefix("--page=").map(str::to_lowercase));
     match arg.as_deref() {

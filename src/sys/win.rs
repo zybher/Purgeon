@@ -161,6 +161,9 @@ extern "system" {
     pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
     pub fn QueryFullProcessImageNameW(h: isize, flags: u32, buf: *mut u16, len: *mut u32) -> i32;
     pub fn SetProcessWorkingSetSize(p: isize, min: usize, max: usize) -> i32;
+    pub fn TerminateProcess(h: isize, code: u32) -> i32;
+    pub fn IsProcessCritical(h: isize, critical: *mut i32) -> i32;
+    pub fn GetLastError() -> u32;
 }
 
 #[link(name = "advapi32")]
@@ -179,6 +182,7 @@ extern "system" {
 #[link(name = "user32")]
 extern "system" {
     pub fn FindWindowW(class: *const u16, title: *const u16) -> isize;
+    pub fn SystemParametersInfoW(action: u32, uparam: u32, pv: *mut c_void, winini: u32) -> i32;
 }
 
 #[link(name = "dwmapi")]
@@ -253,10 +257,20 @@ pub fn physical_cores() -> usize {
     }
 }
 
+/// The only access right Purgeon asks for on another process while monitoring: the same one
+/// Task Manager uses. SAFETY POLICY (keeps games with anti-cheat happy): never
+/// PROCESS_VM_READ/WRITE, never read or write another process's memory, never inject, attach
+/// or debug. Everything per-process comes from system-wide queries (NtQuerySystemInformation,
+/// performance counters, kernel trace events) or this query-only handle.
+pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+/// The single exception to the policy above: asked for only after the user confirms End task,
+/// on that one process, and the handle is closed straight away (see `platform::end_process`).
+pub const PROCESS_TERMINATE: u32 = 0x0001;
+
 /// Full path of a process's executable (works for most processes without admin)
 pub fn process_path(pid: u32) -> Option<String> {
     unsafe {
-        let h = OpenProcess(0x1000, 0, pid); // PROCESS_QUERY_LIMITED_INFORMATION
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if h == 0 {
             return None;
         }

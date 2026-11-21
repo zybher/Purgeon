@@ -2,9 +2,24 @@
 //! costs nothing between data updates.
 
 use eframe::egui::{self, Context, Id, Response};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static REDUCED: AtomicBool = AtomicBool::new(false);
+
+/// Reduce motion: every animation jumps straight to its end (follows Windows' setting)
+pub fn set_reduced(on: bool) {
+    REDUCED.store(on, Ordering::Relaxed);
+}
+
+pub fn reduced() -> bool {
+    REDUCED.load(Ordering::Relaxed)
+}
 
 /// Eased 0..1 value that follows `on`
 pub fn ease(ctx: &Context, id: Id, on: bool) -> f32 {
+    if reduced() {
+        return on as u8 as f32;
+    }
     ctx.animate_bool_with_time_and_easing(id, on, 0.2, egui::emath::easing::cubic_out)
 }
 
@@ -12,6 +27,9 @@ pub fn ease(ctx: &Context, id: Id, on: bool) -> f32 {
 /// in and out never snaps
 pub fn spring(ctx: &Context, id: Id, on: bool, omega: f32) -> f32 {
     let target = if on { 1.0 } else { 0.0 };
+    if reduced() {
+        return target;
+    }
     let (mut x, mut v): (f32, f32) = ctx.data(|d| d.get_temp(id)).unwrap_or((target, 0.0));
     let dt = ctx.input(|i| i.stable_dt).min(0.05);
     let steps = 4;
@@ -33,6 +51,9 @@ pub fn spring(ctx: &Context, id: Id, on: bool, omega: f32) -> f32 {
 
 /// A value that glides to its target (exponential approach)
 pub fn glide(ctx: &Context, id: Id, target: f32, speed: f32) -> f32 {
+    if reduced() {
+        return target;
+    }
     let cur: f32 = ctx.data(|d| d.get_temp(id)).unwrap_or(target);
     let dt = ctx.input(|i| i.stable_dt).min(0.05);
     let mut v = cur + (target - cur) * (1.0 - (-speed * dt).exp());

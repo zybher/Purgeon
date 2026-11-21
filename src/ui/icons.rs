@@ -185,6 +185,13 @@ fn cache(ctx: &egui::Context) -> &'static Mutex<Cache> {
     })
 }
 
+/// Drops the icons of programs that are no longer running (their textures are freed)
+pub fn retain(ctx: &egui::Context, live: &HashSet<&str>) {
+    if let Ok(mut c) = cache(ctx).lock() {
+        c.tex.retain(|k, _| live.contains(&**k));
+    }
+}
+
 /// Paints the process's icon, or its letter avatar while the icon loads / when it has none
 pub fn paint(ctx: &egui::Context, p: &Painter, r: Rect, name: &str, path: Option<&Arc<str>>) {
     let Some(path) = path else {

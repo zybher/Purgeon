@@ -120,11 +120,107 @@ fn top_list_w(ui: &mut Ui, r: Rect, title: &str, col: Color32, rows: &[(&Group, 
     }
 }
 
+/// What a CPU reading means, for tooltips
+fn cpu_note(v: f32) -> String {
+    if v < 50.0 {
+        format!("{v:.0}% busy. Normal: below 50% the CPU has plenty of room.")
+    } else if v < 85.0 {
+        format!("{v:.0}% busy. High but fine for games, builds and exports. Above 85% for long, programs start waiting for the CPU.")
+    } else {
+        format!("{v:.0}% busy. The CPU is close to full and programs may stutter. Top CPU below shows what is using it.")
+    }
+}
+
+/// What a memory reading means, for tooltips
+fn mem_note(frac: f32) -> String {
+    let v = frac * 100.0;
+    if frac < 0.75 {
+        format!("{v:.0}% in use. Normal: Windows uses spare memory as cache and gives it back when needed.")
+    } else if frac < 0.9 {
+        format!("{v:.0}% in use. Getting full: Windows starts compressing memory, which costs some CPU.")
+    } else {
+        format!("{v:.0}% in use. Nearly full: Windows is moving memory to the page file on disk, which is much slower. Closing the biggest users in Top memory helps.")
+    }
+}
+
+/// What a GPU reading means, for tooltips
+fn gpu_note(util: f32, vram_frac: f32) -> String {
+    let u = if util < 90.0 {
+        format!("GPU {util:.0}% busy. Normal.")
+    } else {
+        format!("GPU {util:.0}% busy. Fully used, which is expected while gaming: the game is limited by the GPU, not the CPU.")
+    };
+    let v = if vram_frac < 0.9 {
+        format!("VRAM {:.0}% full. Fine.", vram_frac * 100.0)
+    } else {
+        format!("VRAM {:.0}% full. Above 90% games can stutter as textures spill into slower system memory.", vram_frac * 100.0)
+    };
+    format!("{u}\n{v}")
+}
+
+/// "Your PC has plenty of headroom", then up to five programs in plain words
+fn summary(ui: &mut Ui, s: &Snapshot, w: f32) {
+    let groups = grouped(s);
+    let total = s.mem.total.max(1) as f32;
+    let vram_total = s.gpus.iter().map(|g| g.dedicated_total).max().unwrap_or(0).max(1) as f32;
+    // each program's heaviest use of one resource, as a share of the whole machine
+    let mut hogs: Vec<(&Group, f32, String)> = groups
+        .iter()
+        .filter_map(|g| {
+            let c = g.cpu / 100.0;
+            let m = g.mem as f32 / total;
+            let v = if s.gpu_proc { g.vram as f32 / vram_total } else { 0.0 };
+            let (k, text) = if c >= m && c >= v {
+                (c, format!("is using {:.0}% of the CPU", g.cpu))
+            } else if m >= v {
+                (m, format!("holds {} of memory ({:.0}% of RAM)", fmt::bytes(g.mem), m * 100.0))
+            } else {
+                (v, format!("holds {} of video memory ({:.0}% of VRAM)", fmt::bytes(g.vram), v * 100.0))
+            };
+            (k >= 0.03).then_some((g, k, text))
+        })
+        .collect();
+    hogs.sort_by(|a, b| b.1.total_cmp(&a.1));
+    hogs.truncate(5);
+
+    let mf = s.mem.used_frac();
+    let (head, col) = if s.cpu > 85.0 {
+        ("The CPU is nearly maxed out, so things may feel slow", DANGER)
+    } else if mf > 0.9 {
+        ("Memory is nearly full, so Windows is using the much slower page file", DANGER)
+    } else if s.cpu > 50.0 || mf > 0.75 {
+        ("Your PC is busy but still has headroom", WARN_COL)
+    } else {
+        ("Your PC has plenty of headroom", GPU_COL)
+    };
+
+    let lines = hogs.len().max(1) as f32;
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 60.0 + lines * 26.0), Sense::hover());
+    let p = ui.painter().clone();
+    widgets::card(&p, r, card());
+    p.circle_filled(pos2(r.min.x + 22.0, r.min.y + 26.0), 4.0, col);
+    widgets::fit(&p, pos2(r.min.x + 34.0, r.min.y + 26.0), Align2::LEFT_CENTER, head, sb(14.5), r.width() - 52.0, txt());
+    if hogs.is_empty() {
+        p.text(pos2(r.min.x + 34.0, r.min.y + 58.0), Align2::LEFT_CENTER, "No single program is using much right now.", reg(12.5), txt_faint());
+    }
+    for (i, (g, _, text)) in hogs.iter().enumerate() {
+        let y = r.min.y + 58.0 + i as f32 * 26.0;
+        super::icons::paint(ui.ctx(), &p, Rect::from_center_size(pos2(r.min.x + 42.0, y), vec2(16.0, 16.0)), &g.name, g.path.as_ref());
+        let name = if g.count > 1 { format!("{} (×{})", g.name, g.count) } else { g.name.clone() };
+        let name = super::table::clip(&p, &name, (r.width() * 0.4).max(80.0));
+        let nr = p.text(pos2(r.min.x + 58.0, y), Align2::LEFT_CENTER, name, sb(12.5), txt());
+        widgets::fit(&p, pos2(nr.max.x + 6.0, y), Align2::LEFT_CENTER, text, reg(12.5), r.max.x - 18.0 - (nr.max.x + 6.0), txt_dim());
+    }
+    resp.on_hover_text("Programs using at least 3% of the CPU, memory or video memory. Each line names the resource that program uses most of.");
+}
+
 pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     let mut go = None;
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         let w = ui.available_width();
         header(ui, "Overview", &format!("{}  ·  up {}", s.info.cpu_name, fmt::uptime(s.uptime)));
+        summary(ui, s, w);
+        ui.add_space(GAP);
         let (row, _) = ui.allocate_exact_size(vec2(w, 236.0), Sense::hover());
         let cw = (w - GAP * 2.0) / 3.0;
         let rect = |i: usize| Rect::from_min_size(pos2(row.min.x + i as f32 * (cw + GAP), row.min.y), vec2(cw, row.height()));
@@ -145,6 +241,7 @@ pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         if resp.clicked() {
             go = Some(Page::Cpu);
         }
+        resp.on_hover_text(cpu_note(s.cpu));
 
         // Memory
         let (resp, r) = widgets::card_button(ui, rect(1), egui::Id::new("ov_mem"));
@@ -159,6 +256,7 @@ pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         if resp.clicked() {
             go = Some(Page::Memory);
         }
+        resp.on_hover_text(mem_note(s.mem.used_frac()));
 
         // GPU (the main adapter)
         let (resp, r) = widgets::card_button(ui, rect(2), egui::Id::new("ov_gpu"));
@@ -185,6 +283,9 @@ pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         }
         if resp.clicked() {
             go = Some(Page::Gpu);
+        }
+        if let Some(g) = main_gpu(s).map(|i| &s.gpus[i]) {
+            resp.on_hover_text(gpu_note(g.util, g.dedicated_used as f32 / g.dedicated_total.max(1) as f32));
         }
 
         ui.add_space(GAP);

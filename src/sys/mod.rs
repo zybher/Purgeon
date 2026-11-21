@@ -8,9 +8,11 @@ pub mod etw;
 pub mod gpu;
 mod pdh;
 pub mod win;
+#[cfg(feature = "bench")]
+pub mod bench;
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -118,11 +120,18 @@ pub struct Snapshot {
     pub disk_trace: bool,
     /// Disk bytes/s whose issuing thread had already exited (read, write)
     pub disk_orphan: (f64, f64),
+    /// Per-process GPU counters could be opened. When false, GPU and VRAM per process are
+    /// unknown (shown as "—"), not zero.
+    pub gpu_proc: bool,
 }
 
 pub struct Shared {
     latest: Mutex<Option<Arc<Snapshot>>>,
+    /// 0 = paused
     pub interval_ms: AtomicU32,
+    /// False while the window is minimized: samples keep coming (graphs stay continuous)
+    /// but the UI is not woken up to draw them
+    pub visible: AtomicBool,
 }
 impl Shared {
     /// The newest snapshot, if one arrived since the last call
@@ -132,7 +141,7 @@ impl Shared {
 }
 
 pub fn start(ctx: eframe::egui::Context) -> Arc<Shared> {
-    let shared = Arc::new(Shared { latest: Mutex::new(None), interval_ms: AtomicU32::new(1000) });
+    let shared = Arc::new(Shared { latest: Mutex::new(None), interval_ms: AtomicU32::new(1000), visible: AtomicBool::new(true) });
     let s = shared.clone();
     std::thread::Builder::new()
         .name("purgeon-sampler".into())
@@ -141,14 +150,32 @@ pub fn start(ctx: eframe::egui::Context) -> Arc<Shared> {
             // Prime the deltas, then a quick first real sample so the window fills fast
             c.sample(0.25);
             std::thread::sleep(Duration::from_millis(250));
+            let mut paused = false;
             loop {
                 let t0 = Instant::now();
-                let iv = Duration::from_millis(s.interval_ms.load(Ordering::Relaxed) as u64);
+                let ms = s.interval_ms.load(Ordering::Relaxed);
+                if ms == 0 {
+                    // Paused: no sampling at all
+                    paused = true;
+                    std::thread::sleep(Duration::from_millis(150));
+                    continue;
+                }
+                let iv = Duration::from_millis(ms as u64);
+                if paused {
+                    // Resuming: take a fresh baseline so the first rates aren't averaged over the pause
+                    paused = false;
+                    c.sample(0.0);
+                    std::thread::sleep(Duration::from_millis(250));
+                    continue;
+                }
                 let snap = c.sample(iv.as_secs_f32());
                 if let Ok(mut l) = s.latest.lock() {
                     *l = Some(Arc::new(snap));
                 }
-                ctx.request_repaint();
+                // The UI draws only when there is new data (or the user moves something)
+                if s.visible.load(Ordering::Relaxed) {
+                    ctx.request_repaint();
+                }
                 let el = t0.elapsed();
                 if el < iv {
                     std::thread::sleep(iv - el);
@@ -377,6 +404,7 @@ impl Collector {
             clocks,
             disk_trace: self.trace.is_some(),
             disk_orphan,
+            gpu_proc: self.gpu.is_some(),
         }
     }
 
@@ -476,6 +504,15 @@ impl Collector {
         // Precise CPU: each process's share of all cycles the processors ran (busy + idle),
         // the way Process Explorer does it. Timer-based times are only charged in whole
         // 15.6 ms ticks, so short bursts get missed or billed to the wrong process.
+        //
+        //   cpu%(p) = 100 * dCycleTime(p) / (sum of dCycleTime over processes + sum of d idle cycles)
+        //
+        // Boosted cores: Windows reads the invariant TSC for CycleTime, which ticks at a fixed
+        // rate whatever the core clock, so a cycle is a unit of time and turbo does not inflate
+        // anyone's share. Parked cores: they run their idle thread, whose cycles keep counting,
+        // so they show up as idle capacity, as in perfmon's % Processor Time.
+        // If idle cycles are unavailable, the timer-based values computed above are kept.
+        // Details and caveats: docs/ACCURACY.md.
         let idle = idle_cycles();
         let didle = idle.saturating_sub(self.prev_idle_cycles);
         let first = self.prev_idle_cycles == 0;

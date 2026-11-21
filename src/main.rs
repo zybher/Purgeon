@@ -14,6 +14,12 @@ use eframe::egui;
 pub const TITLE: &str = "Purgeon";
 
 fn main() -> eframe::Result<()> {
+    #[cfg(feature = "bench")]
+    if let Some(i) = std::env::args().position(|a| a == "--bench") {
+        let secs = std::env::args().nth(i + 1).and_then(|s| s.parse().ok()).unwrap_or(30);
+        sys::bench::run(secs);
+        return Ok(());
+    }
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
         .with_inner_size([1180.0, 760.0])

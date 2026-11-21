@@ -7,9 +7,31 @@ use crate::sys::Snapshot;
 use crate::theme::*;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, Rect, ScrollArea, Sense, Stroke, Ui};
 use std::collections::HashMap;
+use std::time::Instant;
 
 const ROW_H: f32 = 28.0;
 const HEAD_H: f32 = 34.0;
+/// What the Memory column shows
+const MEM_MODES: [&str; 3] = ["Private", "Working set", "Commit"];
+const MEM_TIPS: [&str; 3] = [
+    "Memory = private working set: physical memory only this process uses. Task Manager's \"Memory\" column.",
+    "Memory = working set: all physical memory mapped by the process, including pages shared with other processes. Adding these up counts shared pages more than once.",
+    "Memory = commit: private memory the process has reserved, in RAM or the page file. Keeps growing when a program leaks memory.",
+];
+const COL_NAMES: [(Col, &str); 12] = [
+    (Col::Name, "name"),
+    (Col::Pid, "pid"),
+    (Col::Cpu, "cpu"),
+    (Col::Private, "memory"),
+    (Col::Ws, "workingset"),
+    (Col::Commit, "commit"),
+    (Col::Io, "io"),
+    (Col::Disk, "disk"),
+    (Col::Gpu, "gpu"),
+    (Col::Vram, "vram"),
+    (Col::Threads, "threads"),
+    (Col::Handles, "handles"),
+];
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Col {
@@ -68,18 +90,70 @@ pub struct TableState {
     group: bool,
     selected: Option<(String, Option<u32>)>,
     rows: Vec<Row>,
-    key: Option<(usize, Col, bool, bool, String)>,
+    key: Option<(usize, Col, bool, bool, String, usize)>,
+    /// 0 private working set, 1 working set, 2 commit
+    mem_mode: usize,
+    /// End task waiting for the user's confirmation: (name, pid)
+    confirm: Option<(String, u32)>,
+    /// Result of the last End task, shown for a few seconds
+    note: Option<(String, bool, Instant)>,
+    scroll_y: f32,
+    view_h: f32,
+    scroll_to: Option<f32>,
 }
 
 impl Default for TableState {
     fn default() -> Self {
-        TableState { search: String::new(), sort: Col::Cpu, desc: true, group: false, selected: None, rows: Vec::new(), key: None }
+        TableState {
+            search: String::new(),
+            sort: Col::Cpu,
+            desc: true,
+            group: false,
+            selected: None,
+            rows: Vec::new(),
+            key: None,
+            mem_mode: 0,
+            confirm: None,
+            note: None,
+            scroll_y: 0.0,
+            view_h: 400.0,
+            scroll_to: None,
+        }
     }
 }
 
 impl TableState {
+    /// Restores `--sort=cpu[:asc]`, `--group=on` and `--mem=1` (used when relaunching elevated)
+    pub fn from_args() -> Self {
+        let mut t = TableState::default();
+        for a in std::env::args() {
+            if let Some(v) = a.strip_prefix("--sort=") {
+                let (name, asc) = v.split_once(':').map_or((v, false), |(n, d)| (n, d == "asc"));
+                if let Some((c, _)) = COL_NAMES.iter().find(|(_, n)| *n == name) {
+                    t.sort = *c;
+                    t.desc = !asc;
+                }
+            } else if let Some(v) = a.strip_prefix("--group=") {
+                t.group = v == "on";
+            } else if let Some(v) = a.strip_prefix("--mem=") {
+                t.mem_mode = v.parse::<usize>().unwrap_or(0).min(2);
+            }
+        }
+        t
+    }
+
+    /// The arguments `from_args` reads back
+    pub fn state_args(&self) -> Vec<String> {
+        let name = COL_NAMES.iter().find(|(c, _)| *c == self.sort).map_or("cpu", |(_, n)| *n);
+        vec![
+            format!("--sort={name}{}", if self.desc { "" } else { ":asc" }),
+            format!("--group={}", if self.group { "on" } else { "off" }),
+            format!("--mem={}", self.mem_mode),
+        ]
+    }
+
     fn rebuild(&mut self, s: &Snapshot) {
-        let key = (s.seq as usize, self.sort, self.desc, self.group, self.search.clone());
+        let key = (s.seq as usize, self.sort, self.desc, self.group, self.search.clone(), self.mem_mode);
         if self.key.as_ref() == Some(&key) {
             return;
         }
@@ -144,13 +218,19 @@ impl TableState {
                 .collect()
         };
         let sort = self.sort;
+        let mem_mode = self.mem_mode;
+        let mem = |r: &Row| match mem_mode {
+            1 => r.ws,
+            2 => r.commit,
+            _ => r.private_ws,
+        };
         rows.sort_by(|a, b| {
             use std::cmp::Ordering;
             let o = match sort {
                 Col::Name => b.name.to_lowercase().cmp(&a.name.to_lowercase()),
                 Col::Pid => a.pid.unwrap_or(a.count).cmp(&b.pid.unwrap_or(b.count)),
                 Col::Cpu => a.cpu.total_cmp(&b.cpu),
-                Col::Private => a.private_ws.cmp(&b.private_ws),
+                Col::Private => mem(a).cmp(&mem(b)),
                 Col::Ws => a.ws.cmp(&b.ws),
                 Col::Commit => a.commit.cmp(&b.commit),
                 Col::Io => a.io.total_cmp(&b.io),
@@ -175,7 +255,7 @@ impl TableState {
         let w = ui.available_width();
 
         // Header row: title, counts, search, grouping
-        let (hr, _) = ui.allocate_exact_size(vec2(w, 58.0), Sense::hover());
+        let (hr, _) = ui.allocate_exact_size(vec2(w, 66.0), Sense::hover());
         let p = ui.painter().clone();
         p.text(pos2(hr.min.x, hr.min.y + 14.0), Align2::LEFT_CENTER, "Processes", sb(24.0), txt());
         let sub = format!(
@@ -184,7 +264,19 @@ impl TableState {
             fmt::thousands(s.threads as u64),
             fmt::thousands(s.handles as u64)
         );
-        p.text(pos2(hr.min.x, hr.min.y + 40.0), Align2::LEFT_CENTER, sub, reg(12.5), txt_faint());
+        let sub_r = p.text(pos2(hr.min.x, hr.min.y + 40.0), Align2::LEFT_CENTER, sub, reg(12.5), txt_faint());
+
+        // Which memory figure the Memory column shows
+        let mr = Rect::from_min_size(pos2(hr.max.x - 258.0, hr.min.y + 40.0), vec2(258.0, 24.0));
+        if mr.min.x > sub_r.max.x + 12.0 {
+            if widgets::segmented(ui, mr, &MEM_MODES, &mut self.mem_mode, egui::Id::new("mem_mode")) {
+                self.key = None;
+            }
+            ui.interact(mr, egui::Id::new("mem_mode_tip"), Sense::hover()).on_hover_text(MEM_TIPS[self.mem_mode]);
+            if mr.min.x - 110.0 > sub_r.max.x + 12.0 {
+                p.text(pos2(mr.min.x - 10.0, mr.center().y), Align2::RIGHT_CENTER, "Memory column", reg(12.0), txt_faint());
+            }
+        }
 
         let sw = Rect::from_min_size(pos2(hr.max.x - 36.0, hr.min.y + 9.0), vec2(36.0, 21.0));
         widgets::switch(ui, sw, &mut self.group).on_hover_text("Sum processes that share a name (all chrome.exe as one row)");
@@ -223,6 +315,10 @@ impl TableState {
         }
 
         self.rebuild(s);
+        let pitch = ROW_H + ui.spacing().item_spacing.y;
+        if self.confirm.is_none() {
+            self.keyboard(&ctx, focus_id, pitch);
+        }
 
         // The table card fills the rest
         // (ui.put above moved the layout cursor back up to the search box, so anchor on the header)
@@ -232,7 +328,19 @@ impl TableState {
         let inner = card.shrink2(vec2(8.0, 0.0));
 
         // Visible columns: drop the least important ones until the name column has room
-        let mut cols: Vec<(Col, &str, f32, &str, u8)> = COLS.iter().copied().filter(|c| c.0 != Col::Disk || s.disk_trace).collect();
+        let mm = self.mem_mode;
+        let mut cols: Vec<(Col, &str, f32, &str, u8)> = COLS
+            .iter()
+            .copied()
+            .filter(|c| c.0 != Col::Disk || s.disk_trace)
+            .filter(|c| !(mm == 1 && c.0 == Col::Ws) && !(mm == 2 && c.0 == Col::Commit))
+            .map(|mut c| {
+                if c.0 == Col::Private {
+                    c.3 = MEM_TIPS[mm];
+                }
+                c
+            })
+            .collect();
         while cols.iter().map(|c| c.2).sum::<f32>() + 230.0 > inner.width() {
             match cols.iter().enumerate().filter(|(_, c)| c.4 < 9).min_by_key(|(_, c)| c.4) {
                 Some((i, _)) => {
@@ -297,9 +405,15 @@ impl TableState {
         let total_vram = s.gpus.iter().map(|g| g.dedicated_total).max().unwrap_or(0).max(1) as f32;
         let rows = &self.rows;
         let mut clicked: Option<(String, Option<u32>)> = None;
+        let mut end_req: Option<(String, Option<u32>)> = None;
         let group = self.group;
         let selected = self.selected.clone();
-        ScrollArea::vertical().auto_shrink(false).show_rows(&mut bui, ROW_H, rows.len(), |ui, range| {
+        let gpu_ok = s.gpu_proc;
+        let mut sa = ScrollArea::vertical().auto_shrink(false);
+        if let Some(y) = self.scroll_to.take() {
+            sa = sa.vertical_scroll_offset(y);
+        }
+        let out = sa.show_rows(&mut bui, ROW_H, rows.len(), |ui, range| {
             for row in &rows[range] {
                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
                 let r = Rect::from_min_max(pos2(inner.min.x, r.min.y), pos2(inner.max.x, r.max.y));
@@ -326,11 +440,20 @@ impl TableState {
                     let (text, heat, hcol, dim) = match c.0 {
                         Col::Pid => (row.pid.map_or_else(|| row.count.to_string(), |p| p.to_string()), 0.0, CPU_COL, true),
                         Col::Cpu => (fmt::pct(row.cpu), row.cpu / 30.0, CPU_COL, false),
-                        Col::Private => (fmt::bytes(row.private_ws), row.private_ws as f32 / total_mem * 6.0, MEM_COL, false),
+                        Col::Private => {
+                            let m = match mm {
+                                1 => row.ws,
+                                2 => row.commit,
+                                _ => row.private_ws,
+                            };
+                            (fmt::bytes(m), m as f32 / total_mem * 6.0, MEM_COL, false)
+                        }
                         Col::Ws => (fmt::bytes(row.ws), 0.0, MEM_COL, false),
                         Col::Commit => (fmt::bytes(row.commit), 0.0, MEM_COL, false),
                         Col::Io => (fmt::rate(row.io), (row.io / (50.0 * 1048576.0)) as f32, IO_COL, false),
                         Col::Disk => (fmt::rate(row.disk), (row.disk / (50.0 * 1048576.0)) as f32, DISK_COL, row.disk == 0.0),
+                        // GPU counters unavailable: unknown, not zero
+                        Col::Gpu | Col::Vram if !gpu_ok => ("—".into(), 0.0, GPU_COL, true),
                         Col::Gpu => (fmt::pct(row.gpu), row.gpu / 40.0, GPU_COL, false),
                         Col::Vram => (if row.vram == 0 { "0".into() } else { fmt::bytes(row.vram) }, row.vram as f32 / total_vram * 4.0, VRAM_COL, row.vram == 0),
                         Col::Threads => (fmt::thousands(row.threads as u64), 0.0, CPU_COL, true),
@@ -359,14 +482,182 @@ impl TableState {
                             ui.close_menu();
                         }
                     }
+                    ui.separator();
+                    if ui.button("End task…").clicked() {
+                        end_req = Some((nm.clone(), pid));
+                        ui.close_menu();
+                    }
                 });
             }
         });
+        self.scroll_y = out.state.offset.y;
+        self.view_h = out.inner_rect.height();
         if let Some(c) = clicked {
             self.selected = if self.selected.as_ref() == Some(&c) { None } else { Some(c) };
         }
+        if let Some((name, pid)) = end_req {
+            self.selected = Some((name.clone(), pid));
+            self.ask_end(name, pid);
+        }
+
+        // Empty states
         if self.rows.is_empty() {
-            p.text(body.center(), Align2::CENTER_CENTER, "No processes match", reg(13.0), txt_faint());
+            let (t, sub) = if s.procs.is_empty() {
+                ("Couldn't read the process list", "Windows refused the query. Try Elevate (bottom left).")
+            } else {
+                ("No processes match", "Search looks at names and PIDs. Press Esc to clear it.")
+            };
+            p.text(body.center() - vec2(0.0, 10.0), Align2::CENTER_CENTER, t, sb(13.5), txt_dim());
+            p.text(body.center() + vec2(0.0, 12.0), Align2::CENTER_CENTER, sub, reg(12.0), txt_faint());
+        }
+
+        // Result of the last End task
+        if let Some((msg, ok, at)) = &self.note {
+            let age = at.elapsed().as_secs_f32();
+            if age < 5.0 {
+                let r = Rect::from_center_size(pos2(card.center().x, card.max.y - 26.0), vec2((card.width() - 40.0).min(520.0), 34.0));
+                p.rect_filled(r, 10.0, Color32::from_gray(0x2a));
+                p.rect_stroke(r, 10.0, Stroke::new(1.0_f32, border()));
+                p.circle_filled(pos2(r.min.x + 16.0, r.center().y), 3.5, if *ok { GPU_COL } else { DANGER });
+                widgets::fit(&p, pos2(r.min.x + 28.0, r.center().y), Align2::LEFT_CENTER, msg, reg(12.5), r.width() - 40.0, txt());
+                ctx.request_repaint_after(std::time::Duration::from_secs_f32(5.0 - age));
+            } else {
+                self.note = None;
+            }
+        }
+
+        self.confirm_dialog(&ctx);
+    }
+
+    /// Arrow keys move the selection, Delete ends it (after a confirm), typing filters,
+    /// Esc clears the selection or the search
+    fn keyboard(&mut self, ctx: &egui::Context, focus_id: egui::Id, pitch: f32) {
+        use egui::{Event, Key};
+        let search_focused = ctx.memory(|m| m.has_focus(focus_id));
+        let other_focused = ctx.memory(|m| m.focused().is_some_and(|f| f != focus_id));
+        if other_focused {
+            return;
+        }
+        // Type to filter: the first key typed anywhere on the page goes into the search box
+        if !search_focused {
+            let typed: String = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        Event::Text(t) => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            if !typed.trim().is_empty() {
+                self.search.push_str(&typed);
+                ctx.memory_mut(|m| m.request_focus(focus_id));
+                let mut st = egui::text_edit::TextEditState::load(ctx, focus_id).unwrap_or_default();
+                let n = self.search.chars().count();
+                st.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(n))));
+                st.store(ctx, focus_id);
+                return;
+            }
+        }
+        let (up, down, home, end, del, esc) = ctx.input(|i| {
+            (
+                i.key_pressed(Key::ArrowUp),
+                i.key_pressed(Key::ArrowDown),
+                i.key_pressed(Key::Home) && !search_focused,
+                i.key_pressed(Key::End) && !search_focused,
+                i.key_pressed(Key::Delete) && !search_focused,
+                i.key_pressed(Key::Escape),
+            )
+        });
+        if esc {
+            if !self.search.is_empty() {
+                self.search.clear();
+            } else {
+                self.selected = None;
+            }
+            ctx.memory_mut(|m| m.surrender_focus(focus_id));
+        }
+        let n = self.rows.len();
+        if n > 0 && (up || down || home || end) {
+            let cur = self.selected.as_ref().and_then(|(nm, pid)| self.rows.iter().position(|r| r.name == *nm && r.pid == *pid));
+            let i = match (cur, up, down, home) {
+                (_, _, _, true) => 0,
+                _ if end => n - 1,
+                (None, _, _, _) => 0,
+                (Some(c), true, _, _) => c.saturating_sub(1),
+                (Some(c), _, true, _) => (c + 1).min(n - 1),
+                (Some(c), _, _, _) => c,
+            };
+            let r = &self.rows[i];
+            self.selected = Some((r.name.clone(), r.pid));
+            // keep the selected row in view
+            let top = i as f32 * pitch;
+            if top < self.scroll_y {
+                self.scroll_to = Some(top);
+            } else if top + pitch > self.scroll_y + self.view_h {
+                self.scroll_to = Some(top + pitch - self.view_h);
+            }
+        }
+        if del {
+            if let Some((name, pid)) = self.selected.clone() {
+                self.ask_end(name, pid);
+            }
+        }
+    }
+
+    fn ask_end(&mut self, name: String, pid: Option<u32>) {
+        match pid {
+            Some(pid) => self.confirm = Some((name, pid)),
+            None => self.note = Some(("Turn off Group by name to end one process at a time.".into(), false, Instant::now())),
+        }
+    }
+
+    /// "End chrome.exe?" with Cancel and End task. Enter confirms, Esc cancels.
+    fn confirm_dialog(&mut self, ctx: &egui::Context) {
+        let Some((name, pid)) = self.confirm.clone() else { return };
+        let blocked = crate::platform::end_blocked(pid, &name);
+        let (mut go, mut cancel) = ctx.input(|i| (i.key_pressed(egui::Key::Enter) && blocked.is_none(), i.key_pressed(egui::Key::Escape)));
+        // dim everything behind the dialog
+        let screen = ctx.screen_rect();
+        ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("end_dim"))).rect_filled(screen, 0.0, Color32::from_black_alpha(110));
+        egui::Window::new("end_task")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .fixed_size([380.0, 0.0])
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(format!("End {name}?")).font(sb(16.0)).color(hi()));
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(format!("PID {pid}")).font(reg(12.0)).color(txt_faint()));
+                ui.add_space(8.0);
+                let body = blocked.unwrap_or("The program closes immediately. Anything unsaved in it is lost.");
+                ui.label(egui::RichText::new(body).font(reg(12.5)).color(txt_dim()));
+                ui.add_space(14.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if blocked.is_none() {
+                        let b = egui::Button::new(egui::RichText::new("End task").font(sb(12.5)).color(Color32::WHITE)).fill(DANGER).min_size(vec2(92.0, 30.0));
+                        if ui.add(b).clicked() {
+                            go = true;
+                        }
+                    }
+                    let label = if blocked.is_some() { "OK" } else { "Cancel" };
+                    if ui.add(egui::Button::new(egui::RichText::new(label).font(sb(12.5))).min_size(vec2(80.0, 30.0))).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if go {
+            self.confirm = None;
+            self.note = Some(match crate::platform::end_process(pid, &name) {
+                Ok(()) => (format!("Ended {name} (PID {pid})."), true, Instant::now()),
+                Err(e) => (format!("Couldn't end {name}: {e}"), false, Instant::now()),
+            });
+            self.key = None;
+        } else if cancel {
+            self.confirm = None;
         }
     }
 }
