@@ -280,6 +280,7 @@ pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
+        super::page_top(ui);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         header(ui, "Dashboard", &format!("{}  ·  up {}", s.info.cpu_name, fmt::uptime(s.uptime)));
@@ -561,6 +562,7 @@ pub fn cpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
+        super::page_top(ui);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         header(ui, "CPU", &s.info.cpu_name);
@@ -637,6 +639,7 @@ pub fn memory(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
+        super::page_top(ui);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         let m = &s.mem;
@@ -757,6 +760,7 @@ pub fn disk(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
+        super::page_top(ui);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         let total_r: f64 = s.disks.iter().map(|d| d.read).sum();
@@ -871,6 +875,7 @@ pub fn network(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
+        super::page_top(ui);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         let down: f64 = s.nets.iter().map(|a| a.rx).sum();
@@ -1049,6 +1054,7 @@ pub fn gpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
+        super::page_top(ui);
         let w = ui.available_width();
         let top = ui.cursor().min;
         let g = &s.gpus[sel];
@@ -1215,6 +1221,7 @@ pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
+        super::page_top(ui);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         header(ui, "Sensors", "Read through Windows and the graphics driver. Purgeon installs no drivers.");
