@@ -24,7 +24,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 
 const TITLE: &str = "Purgeon overlay";
-pub(super) const W: f32 = 1040.0;
+pub(super) const W: f32 = 1190.0;
 pub(super) const H: f32 = 64.0;
 /// Gap between the top of the screen and the bar, in points
 const TOP: f32 = 10.0;
@@ -404,7 +404,7 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
     // ---- the app in front -------------------------------------------------------------
     let front = FRONT.load(Ordering::Relaxed);
     let u = usage(s, pid_of(front));
-    let left = Rect::from_min_max(full.min + vec2(14.0, 0.0), pos2(full.min.x + 680.0, full.max.y));
+    let left = Rect::from_min_max(full.min + vec2(14.0, 0.0), pos2(full.min.x + 830.0, full.max.y));
     let cy = full.center().y;
     match &u {
         None => {
@@ -421,18 +421,34 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
             text(None, pos2(nx, cy + 7.0), Align2::LEFT_CENTER, &u.name, sb(14.0), txt());
             let gpu = s.gpus.iter().find(|g| g.dedicated_total > 0);
             let vram_total = gpu.map_or(0, |g| g.dedicated_total);
-            let stats: [(&str, String, f32, Color32); 4] = [
+            let ping = if std::env::var_os("PURGEON_SHOT").is_some() && std::env::var_os("PURGEON_FPS_DEMO").is_some() {
+                crate::sys::ping::Ping::Ms(21.0, true)
+            } else if crate::sys::etw::frames() == crate::sys::etw::Frames::Counting {
+                crate::sys::ping::reading(&u.pids)
+            } else {
+                crate::sys::ping::Ping::None
+            };
+            // "~": timed to the game network's entry router, the server itself doesn't answer
+            let (ping_txt, ping_ms) = match ping {
+                crate::sys::ping::Ping::Ms(ms, est) => (format!("{}{ms:.0} ms", if est { "~" } else { "" }), ms),
+                crate::sys::ping::Ping::Finding => ("…".to_string(), 0.0),
+                _ => ("—".to_string(), 0.0),
+            };
+            let ping_col = warn(if ping_ms >= 150.0 { 2 } else if ping_ms >= 80.0 { 1 } else { 0 });
+            let ping_col = if ping_ms < 80.0 { Color32::from_rgb(0x22, 0xc5, 0x5e) } else { ping_col };
+            let stats: [(&str, String, f32, Color32); 5] = [
                 ("RAM", fmt::bytes(u.ram), u.ram as f32 / s.mem.total.max(1) as f32, MEM_COL),
                 ("VRAM", if s.gpu_proc { fmt::bytes(u.vram) } else { "—".into() }, u.vram as f32 / vram_total.max(1) as f32, VRAM_COL),
                 ("CPU", format!("{:.0}%", u.cpu), u.cpu / 100.0, ACCENT),
                 ("GPU", if s.gpu_proc { format!("{:.0}%", u.gpu) } else { "—".into() }, u.gpu / 100.0, GPU_COL),
+                ("PING", ping_txt, ping_ms / 200.0, ping_col),
             ];
             let x0 = nx + 132.0;
             // FPS first, in its own box: for a game it is the number that matters most
             let fb = Rect::from_min_max(pos2(x0 - 10.0, full.min.y + 9.0), pos2(x0 + 206.0, full.max.y - 9.0));
             fps_box(&p, fb, &u.pids, &text);
             let x0 = fb.max.x + 16.0;
-            let cw = (left.max.x - x0) / 4.0;
+            let cw = (left.max.x - x0) / 5.0;
             for (i, (label, value, frac, col)) in stats.iter().enumerate() {
                 let x = x0 + i as f32 * cw;
                 widgets::fit(&p, pos2(x, cy - 9.0), Align2::LEFT_CENTER, value, sb(15.0), cw - 12.0, txt());

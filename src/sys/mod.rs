@@ -8,6 +8,7 @@ pub mod etw;
 pub mod gpu;
 pub mod net;
 mod pdh;
+pub mod ping;
 pub mod thermal;
 pub mod win;
 #[cfg(feature = "bench")]

@@ -45,6 +45,8 @@ const DXGI: Guid = Guid { d1: 0xca11_c036, d2: 0x0102, d3: 0x4a2d, d4: [0xa6, 0x
 const D3D9: Guid = Guid { d1: 0x783a_ca0a, d2: 0x790e, d3: 0x4d7f, d4: [0x84, 0x51, 0xaa, 0x85, 0x05, 0x11, 0xc6, 0xb9] };
 /// Microsoft-Windows-DxgKrnl: the graphics kernel, which sees every frame shown, whatever API
 /// drew it (Vulkan and OpenGL included)
+/// Microsoft-Windows-Kernel-Network: who sends to which address (for the ping counter)
+const KNET: Guid = Guid { d1: 0x7dd4_2a49, d2: 0x5329, d3: 0x4832, d4: [0x8d, 0xfd, 0x43, 0xd9, 0x79, 0x15, 0x3a, 0x88] };
 const DXGKRNL: Guid = Guid { d1: 0x802e_c45a, d2: 0x1e99, d3: 0x4b83, d4: [0x99, 0x20, 0x87, 0xc9, 0x82, 0x77, 0xba, 0x9d] };
 /// The frame session's own GUID
 const FRAME_GUID: Guid = Guid { d1: 0x7c2d_41e8, d2: 0x5b93, d3: 0x4f0a, d4: [0x9e, 0x17, 0x6a, 0xc4, 0x02, 0xb8, 0x3d, 0x5f] };
@@ -419,8 +421,93 @@ fn shown() -> &'static Mutex<HashMap<(u32, u8), VecDeque<i64>>> {
     S.get_or_init(Default::default)
 }
 
+/// How much one process sent to one address lately (send events only: there the remote end
+/// is always the destination)
+#[derive(Clone, Copy, Default)]
+struct Flow {
+    udp: bool,
+    port: u16,
+    /// sends in the current two-second bucket and the one before
+    cur: u32,
+    prev: u32,
+    bucket: i64,
+    last: i64,
+}
+
+fn flows() -> &'static Mutex<HashMap<(u32, [u8; 4]), Flow>> {
+    static S: OnceLock<Mutex<HashMap<(u32, [u8; 4]), Flow>>> = OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// TCPv4 send (10) and UDPv4 send (42): PID, size, daddr, saddr, dport, sport (ports big-endian)
+unsafe fn on_send(r: &EventRecord) {
+    let udp = match r.id {
+        10 => false,
+        42 => true,
+        _ => return,
+    };
+    if r.user_data.is_null() || r.user_data_len < 20 {
+        return;
+    }
+    let d = std::slice::from_raw_parts(r.user_data, 20);
+    let pid = u32::from_le_bytes([d[0], d[1], d[2], d[3]]);
+    let ip = [d[8], d[9], d[10], d[11]];
+    let port = u16::from_be_bytes([d[16], d[17]]);
+    let t = r.timestamp;
+    let two = 2 * QPC_FREQ.load(Ordering::Relaxed);
+    let Ok(mut m) = flows().lock() else { return };
+    if m.len() > 4096 {
+        m.retain(|_, f| t - f.last < two);
+    }
+    let f = m.entry((pid, ip)).or_insert(Flow { bucket: t, ..Default::default() });
+    if t - f.bucket >= two {
+        f.prev = if t - f.bucket < 2 * two { f.cur } else { 0 };
+        f.cur = 0;
+        f.bucket = t;
+    }
+    f.cur += 1;
+    f.last = t;
+    f.udp |= udp;
+    f.port = port;
+}
+
+/// Not worth pinging: this PC's own network, loopback, multicast and the like
+pub fn is_public(ip: [u8; 4]) -> bool {
+    !matches!(ip, [0, ..] | [10, ..] | [127, ..] | [169, 254, ..] | [192, 168, ..] | [224..=255, ..])
+        && !(ip[0] == 172 && (16..32).contains(&ip[1]))
+        && !(ip[0] == 100 && (64..128).contains(&ip[1]))
+}
+
+/// The address these processes talk to the most right now: a game's server. Game traffic is
+/// UDP almost always, so UDP counts four times; web traffic (ports 80/443) and DNS count little.
+pub fn net_target(pids: &[u32]) -> Option<[u8; 4]> {
+    let f = QPC_FREQ.load(Ordering::Relaxed);
+    let mut now = 0i64;
+    unsafe { QueryPerformanceCounter(&mut now) };
+    let m = flows().lock().ok()?;
+    m.iter()
+        .filter(|((pid, ip), fl)| pids.contains(pid) && is_public(*ip) && now - fl.last < 3 * f && fl.port != 53)
+        .map(|((_, ip), fl)| {
+            let mut score = (fl.cur + fl.prev) as f32;
+            if fl.udp {
+                score *= 4.0;
+            }
+            if fl.port == 443 || fl.port == 80 {
+                score *= 0.25;
+            }
+            (*ip, score)
+        })
+        .filter(|x| x.1 >= 4.0)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|x| x.0)
+}
+
 unsafe extern "system" fn on_frame(r: *const EventRecord) {
     let r = &*r;
+    if r.provider == KNET {
+        on_send(r);
+        return;
+    }
     // DXGI Present_Start (42) and PresentMultiplaneOverlay_Start (55); D3D9 Present_Start (1).
     // From the kernel, raised in the presenting process: Present (184), PresentHistory and
     // PresentHistoryDetailed starts (171, 215), Flip (168), FlipMultiPlaneOverlay (252)
@@ -480,6 +567,8 @@ fn start_frames() -> bool {
     let a = unsafe { EnableTraceEx2(h, &DXGI, 1, 4, 0x2, 0, 0, std::ptr::null()) };
     let b = unsafe { EnableTraceEx2(h, &D3D9, 1, 4, u64::MAX, 0, 0, std::ptr::null()) };
     let c = unsafe { EnableTraceEx2(h, &DXGKRNL, 1, 4, 0x800_0000, 0, 0, std::ptr::null()) };
+    // KERNEL_NETWORK_KEYWORD_IPV4, for the ping counter
+    unsafe { EnableTraceEx2(h, &KNET, 1, 4, 0x10, 0, 0, std::ptr::null()) };
     if a != 0 && b != 0 && c != 0 {
         stop_frames();
         return false;

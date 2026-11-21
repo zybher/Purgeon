@@ -41,6 +41,12 @@ and write down anything that looks wrong.
 - [ ] Task Manager: Purgeon's CPU stays about where it was before (well under 1%) while a game runs at high FPS
 - [ ] A Vulkan or OpenGL game (or Roblox, whichever API it picks) also shows its FPS, matching its own counter
 
+## Ping in the bar
+- [ ] In a Roblox game (Purgeon elevated), PING shows "~20 ms"-ish within ~5 s and matches Roblox's NetworkPing (Shift+F5 performance stats), not the higher Data Ping in Shift+F3
+- [ ] Alt-tab to a browser: PING switches to the site it talks to (or "—"); back to Roblox, it comes back
+- [ ] Not elevated: PING shows "—" (the FPS box already says Elevate)
+- [ ] Open Task Manager > Performance > Wi-Fi/Ethernet while in a game: Purgeon's own sending is tiny (one small ping a second)
+
 ## Sharp text
 - [ ] Text in the window and the bar looks as crisp as other Windows apps next to it (no soft, smeared edges), and bold labels still look bold
 - [ ] App icons (Dashboard tiles, Processes, Free up memory, the bar) look as sharp as the same icons in Task Manager, Brave and Antigravity included
