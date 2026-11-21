@@ -1,4 +1,4 @@
-//! The Overview page's two helpers, side by side: "Boost an app" and "Free up memory".
+//! The Dashboard's two helpers, side by side: "Boost an app" and "Free up memory".
 //! Both say plainly what they do and what they can't do.
 
 use super::widgets;
@@ -32,7 +32,7 @@ pub fn cards(ui: &mut Ui, w: f32, gap: f32) {
 }
 
 /// A button placed at `r` without moving the page's layout
-fn button(ui: &mut Ui, r: Rect, id: impl std::hash::Hash, label: &str, primary: bool, enabled: bool) -> bool {
+pub(super) fn button(ui: &mut Ui, r: Rect, id: impl std::hash::Hash, label: &str, primary: bool, enabled: bool) -> bool {
     let mut b = egui::Button::new(RichText::new(label).font(sb(12.5)).color(if primary && enabled { Color32::WHITE } else { txt() }));
     if primary {
         b = b.fill(ACCENT);

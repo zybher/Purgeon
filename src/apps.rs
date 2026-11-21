@@ -1,5 +1,5 @@
 //! Which apps the user has open, and which of them have sat unused for a while. Feeds the
-//! Overview page's "Boost an app" picker and its "Free up memory" card.
+//! Dashboard's "Boost an app" picker and its "Free up memory" card.
 //!
 //! An app here is every process with the same exe name ("Discord.exe" ×6). It counts as unused
 //! when, for at least `IDLE_FOR`, it was never the window in front and stayed near 0% CPU and GPU.
@@ -49,7 +49,7 @@ pub struct App {
     /// What to call it ("Discord", "Google Chrome")
     pub name: String,
     pub path: Option<Arc<str>>,
-    /// Private memory of all its processes plus the largest shared part (as on the Overview page)
+    /// Private memory of all its processes plus the largest shared part (as on the Dashboard)
     pub mem: u64,
     /// How long it has been unused (zero when in use)
     pub idle: Duration,

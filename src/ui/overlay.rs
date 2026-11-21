@@ -17,7 +17,7 @@ use crate::sys::Snapshot;
 use crate::theme::*;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, ViewportBuilder, ViewportId};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 
 const TITLE: &str = "Purgeon overlay";
 const W: f32 = 860.0;
@@ -31,6 +31,70 @@ static FRONT: AtomicIsize = AtomicIsize::new(0);
 static HWND: AtomicIsize = AtomicIsize::new(0);
 /// Closed by growing into the main window: the bar leaves at once instead of sliding up
 static SHUT: AtomicBool = AtomicBool::new(false);
+/// The size picked in Settings: 0 Auto, then 100%, 125%, 150% (255: not read yet)
+static SIZE: AtomicU8 = AtomicU8::new(255);
+/// The scale the bar's window was made at
+static MADE_AT: AtomicU32 = AtomicU32::new(0);
+
+/// The choices Settings offers for the bar's size
+pub const SIZES: [&str; 4] = ["Auto", "100%", "125%", "150%"];
+const SIZE_VALUES: [Option<&str>; 4] = [None, Some("100"), Some("125"), Some("150")];
+
+/// The size picked in Settings (an index into SIZES)
+pub fn size_pick() -> usize {
+    let v = SIZE.load(Ordering::Relaxed);
+    if v != 255 {
+        return v as usize;
+    }
+    let saved = crate::settings::text("overlay_size");
+    let i = SIZE_VALUES.iter().position(|v| *v == saved.as_deref()).unwrap_or(0);
+    SIZE.store(i as u8, Ordering::Relaxed);
+    i
+}
+
+pub fn set_size_pick(i: usize) {
+    let i = i.min(3);
+    SIZE.store(i as u8, Ordering::Relaxed);
+    crate::settings::set_text("overlay_size", SIZE_VALUES[i]);
+}
+
+/// What Auto picks on a screen: bigger on very wide screens, where the bar would otherwise
+/// look small (1.25 at 3440 wide, 1.5 at 4K, both at 100% Windows scaling)
+fn auto_for(mon: isize) -> f32 {
+    let mut mi = MonitorInfo { size: std::mem::size_of::<MonitorInfo>() as u32, monitor: [0; 4], work: [0; 4], flags: 0 };
+    if unsafe { GetMonitorInfoW(mon, &mut mi) } == 0 {
+        return 1.0;
+    }
+    let (mut dx, mut dy) = (96u32, 96u32);
+    // MDT_EFFECTIVE_DPI
+    if unsafe { GetDpiForMonitor(mon, 0, &mut dx, &mut dy) } != 0 {
+        dx = 96;
+    }
+    let wide = (mi.monitor[2] - mi.monitor[0]) as f32 * 96.0 / dx.max(1) as f32;
+    if wide >= 3800.0 {
+        1.5
+    } else if wide >= 3000.0 {
+        1.25
+    } else {
+        1.0
+    }
+}
+
+/// The scale Auto uses on the screen Purgeon's window is on (for Settings)
+pub fn auto_here() -> f32 {
+    // MONITOR_DEFAULTTONEAREST
+    auto_for(unsafe { MonitorFromWindow(crate::platform::main_window(), 2) })
+}
+
+/// The bar's scale right now
+fn zoom() -> f32 {
+    match size_pick() {
+        1 => 1.0,
+        2 => 1.25,
+        3 => 1.5,
+        _ => auto_for(unsafe { MonitorFromWindow(FRONT.load(Ordering::Relaxed), 1) }),
+    }
+}
 
 #[link(name = "user32")]
 extern "system" {
@@ -44,6 +108,11 @@ extern "system" {
     fn SetWindowLongPtrW(h: isize, i: i32, v: isize) -> isize;
     fn IsWindow(h: isize) -> i32;
     fn MonitorFromRect(r: *const [i32; 4], flags: u32) -> isize;
+}
+
+#[link(name = "shcore")]
+extern "system" {
+    fn GetDpiForMonitor(m: isize, kind: u32, x: *mut u32, y: *mut u32) -> i32;
 }
 
 #[repr(C)]
@@ -149,10 +218,19 @@ pub fn show(ctx: &egui::Context, snap: Option<&Snapshot>) {
         .with_taskbar(false)
         .with_active(false)
         .with_always_on_top();
-    ctx.show_viewport_immediate(ViewportId::from_hash_of("purgeon_overlay"), builder, |ctx, _| {
+    // A bigger size draws the bar at a higher zoom, so the text stays sharp. The window is
+    // made at that size, so a new size gets a new window.
+    let z = zoom();
+    if MADE_AT.swap(z.to_bits(), Ordering::Relaxed) != z.to_bits() {
+        HWND.store(0, Ordering::Relaxed);
+    }
+    let main_zoom = ctx.zoom_factor();
+    ctx.options_mut(|o| o.zoom_factor = z);
+    ctx.show_viewport_immediate(ViewportId::from_hash_of(("purgeon_overlay", z.to_bits())), builder, |ctx, _| {
         place(t);
         egui::CentralPanel::default().frame(egui::Frame::none().fill(card())).show(ctx, |ui| bar(ui, snap));
     });
+    ctx.options_mut(|o| o.zoom_factor = main_zoom);
 }
 
 /// Finds the overlay's window once, makes it never take focus, and puts it at the top center
@@ -337,7 +415,7 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
             let font = if *level > 0 { sb(12.5) } else { reg(12.5) };
             widgets::fit(&p, pos2(vx, y), Align2::LEFT_CENTER, value, font.clone(), w - (vx - x) - 4.0, col);
             text(None, pos2(x, y), Align2::LEFT_CENTER, label, reg(9.5), txt_faint());
-            // the numbers the Overview page also shows fly to their places there
+            // the numbers the Dashboard also shows fly to their places there
             let key = match (row, *label) {
                 ("LOAD", "CPU") => Some("cpu"),
                 ("LOAD", "GPU") => Some("gpu"),
@@ -350,7 +428,16 @@ fn bar(ui: &mut egui::Ui, snap: Option<&Snapshot>) {
     }
 
     // ---- open the full app ------------------------------------------------------------
-    let resp = ui.interact(btn, egui::Id::new("overlay_open"), Sense::click()).on_hover_text("Open Purgeon");
+    // The pointer reaches a zoomed bar unscaled (eframe converts it before the zoom is set),
+    // so the button listens on its rect times the zoom
+    let z = ui.ctx().zoom_factor();
+    let hit = Rect::from_min_max((btn.min.to_vec2() * z).to_pos2(), (btn.max.to_vec2() * z).to_pos2());
+    let mut hu = ui.new_child(egui::UiBuilder::new().max_rect(hit));
+    hu.set_clip_rect(hit);
+    let mut resp = hu.interact(hit, egui::Id::new("overlay_open"), Sense::click());
+    if z == 1.0 {
+        resp = resp.on_hover_text("Open Purgeon");
+    }
     let (hov, _) = anim::hover_fx(ui.ctx(), &resp);
     p.rect_filled(btn, 8.0, mix(card(), card_hi(), hov));
     // two arrows pointing out of the corners: "expand"

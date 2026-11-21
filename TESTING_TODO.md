@@ -24,14 +24,23 @@ and write down anything that looks wrong.
 - [ ] In exclusive fullscreen games the bar doesn't show (expected). Switching the game to borderless makes it show
 - [ ] The RAM number for a game looks right next to the Processes page
 - [ ] With Windows' animation effects turned off, the bar appears instantly, with no slide
-- [ ] The bar is easy to read at a glance on the ultrawide. If the text feels too small, say so and it can get a size setting (125%, 150%) or scale up on wide screens by itself
-- [ ] Click the expand button: the bar should grow into the full window, the CPU, GPU, temperature and RAM numbers glide to their spots on the Overview page, and the page fades in. Try it with Purgeon maximized, not maximized, and closed to the tray
+- [ ] Click the expand button: the bar should grow into the full window, the CPU, GPU, temperature and RAM numbers glide to their spots on the Dashboard, and the page fades in. Try it with Purgeon maximized, not maximized, and closed to the tray
 - [ ] During that, look for a single-frame flash of the old window before the bar starts growing. If you see one, say so
 - [ ] With the bar on one screen and Purgeon on another, it should still look reasonable (the bar starts from the nearest edge of the window)
 - [ ] With Windows' animation effects off, the expand button just opens the window, with no morph
 - [ ] The System side's two rows read clearly: LOAD (how busy CPU, GPU, RAM are, plus download speed) and TEMP (how hot). CPU temperature shows "—" on purpose, since reading it needs a driver
 
-## Boost an app (Overview page)
+## Settings page
+- [ ] Size: on Auto, the bar on the ultrawide is 125% (the Settings card says so). Is it easy to read at a glance now? Try 150% too
+- [ ] Changing the size while the bar is open redraws it at the new size, and the text stays sharp
+- [ ] At 125% and 150%, the expand button still reacts to the mouse (it lights up on hover) and opens Purgeon with the morph
+- [ ] Shortcut: click the Alt+Shift+P box, press Ctrl+Alt+O. It says "Saved", and Ctrl+Alt+O now opens the bar from a game. Alt+Shift+P no longer does
+- [ ] While the box says "Press the new keys…", pressing Alt+Shift+P doesn't open the bar
+- [ ] Pressing a single key, or Shift+a letter, is refused with a short reason; Esc or clicking elsewhere cancels
+- [ ] Reset brings back Alt+Shift+P, and the tray menu shows the current shortcut
+- [ ] The new shortcut still works after quitting and starting Purgeon again
+
+## Boost an app (Dashboard)
 - [ ] Pick a game from "Choose an open app…" and click Boost. The card says "Priority raised" and "Power plan: High performance"
 - [ ] While the game runs, Task Manager > Details > right-click the game > Set priority shows Above normal
 - [ ] Windows Settings > System > Power shows the High performance plan while the game runs (on some PCs only in Control Panel > Power Options)
@@ -42,7 +51,7 @@ and write down anything that looks wrong.
 - [ ] With Roblox (or another anti-cheat game), check what the card says. If it says the game doesn't allow it, that's expected
 - [ ] Does the game feel any different? Honest answer welcome, it's meant as a small nudge
 
-## Free up memory (Overview page)
+## Free up memory (Dashboard)
 - [ ] Leave Purgeon open for 10+ minutes with apps you're not using (Discord, Steam, a second browser). They show up in the list
 - [ ] The app you're actively using never shows up there, and neither does a game that's running
 - [ ] Close… on an app with a window: it closes like you clicked its X (it may ask to save)
@@ -56,7 +65,7 @@ and write down anything that looks wrong.
 - [ ] Elevate works while Purgeon is in tray mode: only one tray icon afterwards, and the menu still works
 
 ## Look and feel
-- [ ] Overview page: the top card shows the five apps holding the most memory as tiles, biggest first, all in GB (the bars are sized against the biggest). Hover a tile to see the exe name and how many processes it has
+- [ ] Dashboard: the top card shows the five apps holding the most memory as tiles, biggest first, all in GB (the bars are sized against the biggest). Hover a tile to see the exe name and how many processes it has
 - [ ] Hovering the Boost and Free up memory cards shows the longer explanation that used to be written out on the card
 - [ ] Processes page: when the order changes, the row slide feels neither too fast nor too slow
 

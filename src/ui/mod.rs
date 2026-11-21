@@ -3,6 +3,7 @@
 mod graph;
 pub mod overlay;
 mod pages;
+mod prefs;
 mod icons;
 mod morph;
 mod table;
@@ -25,7 +26,7 @@ const INTERVALS: [(&str, u32); 4] = [("0.5s", 500), ("1s", 1000), ("2s", 2000), 
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Page {
-    Overview,
+    Dashboard,
     Processes,
     Cpu,
     Memory,
@@ -33,10 +34,11 @@ pub enum Page {
     Network,
     Gpu,
     Sensors,
+    Settings,
 }
 
-const NAV: [(Page, Icon, &str, bool); 8] = [
-    (Page::Overview, Icon::Overview, "Overview", true),
+const NAV: [(Page, Icon, &str, bool); 9] = [
+    (Page::Dashboard, Icon::Dashboard, "Dashboard", true),
     (Page::Processes, Icon::Processes, "Processes", true),
     (Page::Cpu, Icon::Cpu, "CPU", true),
     (Page::Memory, Icon::Memory, "Memory", true),
@@ -44,6 +46,7 @@ const NAV: [(Page, Icon, &str, bool); 8] = [
     (Page::Network, Icon::Network, "Network", true),
     (Page::Gpu, Icon::Gpu, "GPU", true),
     (Page::Sensors, Icon::Sensors, "Sensors", true),
+    (Page::Settings, Icon::Settings, "Settings", true),
 ];
 
 pub struct App {
@@ -113,6 +116,9 @@ impl App {
 
     fn go(&mut self, p: Page) {
         if self.page != p {
+            if self.page == Page::Settings {
+                prefs::leave();
+            }
             self.page = p;
             self.page_at = Instant::now();
         }
@@ -356,7 +362,7 @@ impl eframe::App for App {
         }
         let scroll = egui::emath::easing::cubic_out(scroll);
 
-        // The overlay's expand button: the bar grows into this window, on the Overview page
+        // The overlay's expand button: the bar grows into this window, on the Dashboard
         if self.morph.is_none() {
             if self.shot.is_some() && !self.morph_tested && self.snap.is_some() {
                 self.morph_tested = true;
@@ -364,7 +370,7 @@ impl eframe::App for App {
             }
             if let Some(m) = morph::take(ctx) {
                 self.morph = Some(m);
-                self.page = Page::Overview;
+                self.page = Page::Dashboard;
                 // the page rises in once the bar has nearly filled the window
                 self.page_at = Instant::now() + std::time::Duration::from_millis(230);
             }
@@ -415,7 +421,7 @@ impl eframe::App for App {
                     let s = s.clone();
                     let page = self.page;
                     let nav = match page {
-                        Page::Overview => pages::overview(&mut cui, &s, scroll),
+                        Page::Dashboard => pages::dashboard(&mut cui, &s, scroll),
                         Page::Processes => {
                             self.table.show(&mut cui, &s);
                             None
@@ -426,6 +432,10 @@ impl eframe::App for App {
                         Page::Network => pages::network(&mut cui, &s, scroll),
                         Page::Gpu => pages::gpu(&mut cui, &s, scroll),
                         Page::Sensors => pages::sensors(&mut cui, &s, scroll),
+                        Page::Settings => {
+                            prefs::show(&mut cui);
+                            None
+                        }
                     };
                     if let Some(pg) = nav {
                         self.go(pg);
@@ -582,7 +592,7 @@ fn setup_style(ctx: &egui::Context, reduced: bool) {
 
 fn page_name(p: Page) -> &'static str {
     match p {
-        Page::Overview => "overview",
+        Page::Dashboard => "dashboard",
         Page::Processes => "processes",
         Page::Cpu => "cpu",
         Page::Memory => "memory",
@@ -590,10 +600,11 @@ fn page_name(p: Page) -> &'static str {
         Page::Network => "network",
         Page::Gpu => "gpu",
         Page::Sensors => "sensors",
+        Page::Settings => "settings",
     }
 }
 
-/// `--page=cpu` (overview, processes, cpu, memory, disk, gpu, sensors) opens on that page
+/// `--page=cpu` (dashboard, processes, cpu, memory, disk, gpu, sensors, settings) opens on that page
 fn start_page() -> Page {
     let arg = std::env::args().find_map(|a| a.strip_prefix("--page=").map(str::to_lowercase));
     match arg.as_deref() {
@@ -604,6 +615,8 @@ fn start_page() -> Page {
         Some("network") => Page::Network,
         Some("gpu") => Page::Gpu,
         Some("sensors") => Page::Sensors,
-        _ => Page::Overview,
+        Some("settings") => Page::Settings,
+        // "overview" was the Dashboard's old name
+        _ => Page::Dashboard,
     }
 }

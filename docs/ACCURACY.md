@@ -114,7 +114,7 @@ one figure that tracks what available RAM loses, which the test below shows.
 (the same DLLs, the same shared memory), so adding up their shared parts would count those
 pages many times; 30 browser processes could otherwise appear to hold gigabytes they don't.
 This is an estimate: a group whose members share different pages reads a little low. The same
-rule is used for "Top memory" on the Overview.
+rule is used for "Top memory" on the Dashboard.
 
 **Tested** (`cargo run --release --features bench -- --bench-mem`, two runs, same machine as
 below). A small helper process reserved or used memory of a known size; the table shows how

@@ -146,7 +146,7 @@ pub fn meter(p: &Painter, r: Rect, frac: f32, col: Color32) {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
-    Overview,
+    Dashboard,
     Processes,
     Cpu,
     Memory,
@@ -155,13 +155,14 @@ pub enum Icon {
     Gpu,
     Sensors,
     Search,
+    Settings,
 }
 
 /// Small line icons painted from shapes (18 px box around `c`)
 pub fn icon(p: &Painter, kind: Icon, c: Pos2, col: Color32) {
     let s = Stroke::new(1.4_f32, col);
     match kind {
-        Icon::Overview => {
+        Icon::Dashboard => {
             for (dx, dy) in [(-4.5, -4.5), (4.5, -4.5), (-4.5, 4.5), (4.5, 4.5)] {
                 p.rect_stroke(Rect::from_center_size(c + vec2(dx, dy), vec2(6.5, 6.5)), 2.0, s);
             }
@@ -224,6 +225,15 @@ pub fn icon(p: &Painter, kind: Icon, c: Pos2, col: Color32) {
         Icon::Search => {
             p.circle_stroke(c + vec2(-1.5, -1.5), 4.6, s);
             p.line_segment([c + vec2(2.0, 2.0), c + vec2(5.5, 5.5)], Stroke::new(1.6_f32, col));
+        }
+        Icon::Settings => {
+            p.circle_stroke(c, 2.4, s);
+            p.circle_stroke(c, 5.6, s);
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::TAU / 8.0;
+                let d = vec2(a.cos(), a.sin());
+                p.line_segment([c + d * 5.6, c + d * 8.0], Stroke::new(2.4_f32, col));
+            }
         }
     }
 }

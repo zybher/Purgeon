@@ -1,4 +1,4 @@
-//! Overview, CPU and Memory pages, and the placeholders for what's next.
+//! Dashboard, CPU and Memory pages, and the placeholders for what's next.
 
 use super::graph::{self, Graph, Series};
 use super::widgets;
@@ -239,11 +239,11 @@ fn summary(ui: &mut Ui, s: &Snapshot, w: f32) {
     resp.on_hover_text("The five programs holding the most memory, all their processes counted together. The Processes page shows everything.");
 }
 
-pub fn overview(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
+pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     let mut go = None;
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         let w = ui.available_width();
-        header(ui, "Overview", &format!("{}  ·  up {}", s.info.cpu_name, fmt::uptime(s.uptime)));
+        header(ui, "Dashboard", &format!("{}  ·  up {}", s.info.cpu_name, fmt::uptime(s.uptime)));
         summary(ui, s, w);
         ui.add_space(GAP);
         let (row, _) = ui.allocate_exact_size(vec2(w, 236.0), Sense::hover());

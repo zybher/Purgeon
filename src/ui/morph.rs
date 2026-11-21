@@ -4,7 +4,7 @@
 //! main window: just before it appears, the part of the screen it will cover is copied, and its
 //! first frames draw that copy as their background, with the overlay's bar on top exactly where
 //! the overlay was. The bar then grows into the window while the numbers that also appear on the
-//! Overview page (CPU, GPU, temperature, RAM) glide and grow into their places there, the rest of
+//! Dashboard (CPU, GPU, temperature, RAM) glide and grow into their places there, the rest of
 //! the bar fades, and the page fades and rises in. Off when Windows' animation effects are off.
 
 use super::widgets;
@@ -22,7 +22,7 @@ const GROW: f32 = 0.44;
 /// Something the overlay drew, in its own points, so the morph can draw it again
 #[derive(Clone)]
 pub enum Piece {
-    /// `key` names the Overview number it flies to; None fades away with the bar
+    /// `key` names the Dashboard number it flies to; None fades away with the bar
     Text { key: Option<&'static str>, text: String, pos: Pos2, align: Align2, font: FontId, col: Color32 },
     Icon { name: String, path: Option<Arc<str>>, rect: Rect },
     Meter { rect: Rect, frac: f32, col: Color32 },
@@ -45,7 +45,7 @@ impl Piece {
 static DRAWN: Mutex<Vec<Piece>> = Mutex::new(Vec::new());
 /// A morph asked for by the overlay, waiting for the main window's next frame
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
-/// Where the Overview page drew each number last frame: left-centre position and font size
+/// Where the Dashboard drew each number last frame: left-centre position and font size
 static TARGETS: Mutex<Option<HashMap<&'static str, (Pos2, f32)>>> = Mutex::new(None);
 
 struct Pending {
@@ -65,7 +65,7 @@ pub fn record(p: Piece) {
     DRAWN.lock().unwrap_or_else(|e| e.into_inner()).push(p);
 }
 
-/// Called by the Overview page for each number the morph can fly to
+/// Called by the Dashboard for each number the morph can fly to
 pub fn mark(key: &'static str, pos: Pos2, size: f32) {
     TARGETS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(key, (pos, size));
 }

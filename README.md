@@ -56,17 +56,21 @@ VRAM, CPU and GPU it takes, its helper processes included. On the right, smaller
 in two rows: LOAD (CPU, GPU and RAM use, and download speed) and TEMP (how hot the CPU and GPU
 are). They turn amber or red only when something's wrong. The button at the far right opens
 Purgeon: the bar grows into the window, and the CPU, GPU, temperature and RAM numbers glide to
-their places on the Overview page while the rest of the page fades in (instant when Windows'
+their places on the Dashboard while the rest of the page fades in (instant when Windows'
 animation effects are off).
 
 The bar is a normal always-on-top window that never takes focus. Nothing is added to or hooked
 into the game, so it's safe with anti-cheat, but it can't show an FPS counter, and it can't
-appear over exclusive fullscreen games (borderless and windowed are fine). To use another
-shortcut, put a line like `overlay_key=Ctrl+Alt+O` in `%APPDATA%\Purgeon\settings.ini`.
+appear over exclusive fullscreen games (borderless and windowed are fine).
+
+On the **Settings** page you can make the bar bigger (100%, 125%, 150%, or Auto, which uses
+125% on 3440-wide screens and 150% on 4K ones) and pick another shortcut: click the shortcut and
+press the new keys. It needs two of Ctrl, Alt and Shift (or one with an F key), so it never takes
+a key other apps use on their own. Both are saved in `%APPDATA%\Purgeon\settings.ini`.
 
 ## Boost an app
 
-On the Overview page, pick a game or app and click **Boost**. Whenever it runs, Purgeon raises
+On the Dashboard, pick a game or app and click **Boost**. Whenever it runs, Purgeon raises
 its priority one step (Normal to Above normal, never higher) and switches Windows to the High
 performance power plan. When the app closes, the boost is turned off, or Purgeon quits, the
 priority and the power plan go back to what they were. Purgeon remembers the pick and boosts the
@@ -79,7 +83,7 @@ performance plan keep their plan.
 
 ## Free up memory
 
-Also on the Overview page. It lists apps that hold over 200 MB and that you haven't used for
+Also on the Dashboard. It lists apps that hold over 200 MB and that you haven't used for
 10 minutes (never in front, near 0% CPU and GPU). Clicking **Close…** asks first. An app with a
 window open is asked to close, the same as clicking its X, so it can ask to save. One with no
 window (tray and background apps) is ended. A few seconds later the card reports how much free

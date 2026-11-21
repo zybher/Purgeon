@@ -68,6 +68,8 @@ extern "system" {
     fn PostMessageW(h: isize, m: u32, w: usize, l: isize) -> i32;
     fn SetForegroundWindow(h: isize) -> i32;
     fn RegisterHotKey(h: isize, id: i32, mods: u32, vk: u32) -> i32;
+    fn UnregisterHotKey(h: isize, id: i32) -> i32;
+    fn SendMessageW(h: isize, m: u32, w: usize, l: isize) -> isize;
     fn RegisterWindowMessageW(name: *const u16) -> u32;
     fn ChangeWindowMessageFilterEx(h: isize, m: u32, action: u32, info: *mut c_void) -> i32;
     fn CreatePopupMenu() -> isize;
@@ -100,7 +102,7 @@ const WM_TRAY: u32 = WM_APP + 1;
 const WM_COMMAND_PURGEON: u32 = WM_APP + 2;
 const WM_HOTKEY: u32 = 0x0312;
 /// The overlay's shortcut when settings.ini doesn't name another one (`overlay_key=...`)
-const DEFAULT_KEY: &str = "Alt+Shift+P";
+pub const DEFAULT_KEY: &str = "Alt+Shift+P";
 
 /// The overlay shortcut as typed in settings.ini ("Ctrl+Alt+O", "Alt+Shift+F2"), as
 /// RegisterHotKey's modifiers and virtual key
@@ -134,6 +136,46 @@ fn parse_key(s: &str) -> Option<(u32, u32)> {
 /// The overlay shortcut, as shown in the tray menu
 pub fn overlay_key() -> String {
     crate::settings::text("overlay_key").filter(|k| parse_key(k).is_some()).unwrap_or_else(|| DEFAULT_KEY.to_string())
+}
+
+/// Whether `s` can be used as the overlay shortcut
+pub fn valid_key(s: &str) -> bool {
+    parse_key(s).is_some()
+}
+
+/// (Re)registers the overlay shortcut from settings.ini; false when another app has it
+unsafe fn register_key(h: isize) -> bool {
+    UnregisterHotKey(h, 1);
+    parse_key(&overlay_key()).is_some_and(|(mods, vk)| RegisterHotKey(h, 1, mods, vk) != 0)
+}
+
+/// Saves a new overlay shortcut and switches to it at once. When another app already has
+/// it, the old one stays and this returns false.
+pub fn set_overlay_key(key: &str) -> bool {
+    let old = crate::settings::text("overlay_key");
+    let new = (!key.eq_ignore_ascii_case(DEFAULT_KEY)).then_some(key);
+    crate::settings::set_text("overlay_key", new);
+    let h = HWND.load(Ordering::Relaxed);
+    if h == 0 {
+        // no tray (yet): it registers whatever is saved when it starts
+        return true;
+    }
+    // the shortcut belongs to the tray's thread, so it does the registering
+    if unsafe { SendMessageW(h, WM_COMMAND_PURGEON, 3, 0) } != 0 {
+        return true;
+    }
+    crate::settings::set_text("overlay_key", old.as_deref());
+    unsafe { SendMessageW(h, WM_COMMAND_PURGEON, 3, 0) };
+    false
+}
+
+/// Turns the shortcut off while a new one is being typed (so pressing the old one doesn't
+/// open the overlay), or back on
+pub fn pause_overlay_key(pause: bool) {
+    let h = HWND.load(Ordering::Relaxed);
+    if h != 0 {
+        unsafe { SendMessageW(h, WM_COMMAND_PURGEON, if pause { 4 } else { 3 }, 0) };
+    }
 }
 
 fn toggle_overlay() {
@@ -235,15 +277,12 @@ unsafe fn run() {
     HWND.store(h, Ordering::Relaxed);
     // The overlay shortcut. RegisterHotKey only gets told about that one key combination; it
     // doesn't watch the keyboard, so it is safe next to anti-cheat.
-    let key = overlay_key();
-    if let Some((mods, vk)) = parse_key(&key) {
-        if RegisterHotKey(h, 1, mods, vk) == 0 {
-            notify(
-                "The overlay shortcut is taken",
-                &format!("Another app already uses {key}. You can still open the overlay from Purgeon's tray icon."),
-                false,
-            );
-        }
+    if !register_key(h) {
+        notify(
+            "The overlay shortcut is taken",
+            &format!("Another app already uses {}. Pick another one in Purgeon's Settings, or open the overlay from the tray icon.", overlay_key()),
+            false,
+        );
     }
     let mut msg: Msg = std::mem::zeroed();
     while GetMessageW(&mut msg, 0, 0, 0) > 0 {
@@ -377,6 +416,14 @@ unsafe extern "system" fn wnd_proc(h: isize, m: u32, w: usize, l: isize) -> isiz
         if w == 2 {
             toggle_overlay();
             return 0;
+        }
+        // from Settings: switch to the saved shortcut (1 when it worked), or pause it
+        if w == 3 {
+            return register_key(h) as isize;
+        }
+        if w == 4 {
+            UnregisterHotKey(h, 1);
+            return 1;
         }
         show_window();
         return 0;
