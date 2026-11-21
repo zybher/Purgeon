@@ -967,7 +967,7 @@ fn note_card(ui: &mut Ui, w: f32, title: &str, col: Color32, body: &str) {
     p.galley(pos2(r.min.x + 18.0, r.min.y + 42.0), g, txt_dim());
 }
 
-const NO_CPU_TEMP: &str = "Windows has no built-in way to read the CPU's own temperature sensor. Tools that show it load a kernel driver, and the most common one (WinRing0) is on Microsoft's vulnerable driver blocklist and is flagged by anti-cheat. Purgeon does not load any driver.";
+const NO_CPU_TEMP: &str = "Windows has no built-in way to read the CPU's own temperature sensor. Tools that show it load a kernel driver, which anti-cheat can flag. Purgeon never loads one, so there is nothing extra to install and nothing for anti-cheat to object to.";
 
 pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -1121,7 +1121,7 @@ pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
             ("Base clock".into(), ghz(base), None, Some("The rated speed. Boost clocks above it are normal when the CPU is cool and has power to spare.")),
         ];
         if s.zones.is_empty() {
-            tiles.push(("CPU temperature".into(), "Unavailable".into(), None, Some(NO_CPU_TEMP)));
+            tiles.push(("CPU temperature".into(), "Needs a driver".into(), None, Some(NO_CPU_TEMP)));
         }
         for (name, c) in &s.zones {
             tiles.push((
@@ -1137,9 +1137,9 @@ pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         note_card(
             ui,
             w,
-            "Not shown: CPU temperature, motherboard sensors and fan speeds",
+            "Not shown on purpose: CPU temperature, motherboard sensors and case fans",
             txt_faint(),
-            &format!("{NO_CPU_TEMP} GPU readings above come from the graphics driver's own monitoring library, which games' overlays use too."),
+            "Reading these needs a kernel driver, which anti-cheat can flag. Purgeon never loads one.",
         );
         ui.add_space(GAP);
     });
