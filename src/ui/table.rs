@@ -9,7 +9,7 @@ use eframe::egui::{self, pos2, vec2, Align2, Color32, Rect, ScrollArea, Sense, S
 use std::collections::HashMap;
 use std::time::Instant;
 
-const ROW_H: f32 = 28.0;
+const ROW_H: f32 = 46.0;
 const HEAD_H: f32 = 34.0;
 /// How long rows take to slide to their new places after the sort changes
 const REORDER_SECS: f32 = 0.38;
@@ -40,20 +40,6 @@ pub enum Col {
     Threads,
     Handles,
 }
-
-/// Columns right of the name: (column, title, width, explanation, priority).
-/// Lower priority columns are hidden first when the window is too narrow.
-const COLS: [(Col, &str, f32, &str, u8); 9] = [
-    (Col::Pid, "PID", 62.0, "Process ID. Grouped rows show how many processes share the name.", 9),
-    (Col::Cpu, "CPU", 68.0, "Share of the whole CPU over the last update (100% = every logical processor busy).", 9),
-    (Col::Ram, "RAM", 88.0, RAM_TIP, 9),
-    (Col::Io, "I/O", 86.0, "Bytes read + written per second across file, network and device I/O.", 8),
-    (Col::Disk, "Disk", 86.0, "Physical disk reads + writes per second: only I/O that reached the disk (no network, no cache hits). Needs administrator.", 8),
-    (Col::Gpu, "GPU", 62.0, "Busiest GPU engine this process uses (the way Task Manager counts it).", 8),
-    (Col::Vram, "VRAM", 84.0, "Dedicated GPU memory the process holds, summed over all GPUs.", 8),
-    (Col::Threads, "Threads", 64.0, "Number of threads.", 1),
-    (Col::Handles, "Handles", 70.0, "Number of open kernel object handles.", 4),
-];
 
 /// The RAM cell's hover text, in plain words
 fn ram_breakdown(r: &Row) -> String {
@@ -110,6 +96,8 @@ pub struct TableState {
     scroll_to: Option<f32>,
     /// Where each row was before the user changed the sort, and when: rows slide from there
     reorder: Option<(HashMap<(String, Option<u32>), usize>, Instant)>,
+    /// The row the details panel shows (kept while it slides away)
+    inspect: Option<Row>,
 }
 
 impl Default for TableState {
@@ -128,6 +116,7 @@ impl Default for TableState {
             view_h: 400.0,
             scroll_to: None,
             reorder: None,
+            inspect: None,
         }
     }
 }
@@ -308,6 +297,11 @@ impl TableState {
         }
 
         self.rebuild(s);
+        // dev captures can start with the top row open in the details panel: PURGEON_PROC_SELECT=1
+        if self.selected.is_none() && !self.rows.is_empty() && std::env::var_os("PURGEON_PROC_SELECT").is_some() && !ctx.data(|d| d.get_temp::<bool>(egui::Id::new("proc_test_sel")).unwrap_or(false)) {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("proc_test_sel"), true));
+            self.selected = Some((self.rows[0].name.clone(), self.rows[0].pid));
+        }
         let pitch = ROW_H + ui.spacing().item_spacing.y;
         if self.confirm.is_none() {
             self.keyboard(&ctx, focus_id, pitch);
@@ -320,35 +314,47 @@ impl TableState {
         widgets::card(&p, card, crate::theme::card());
         let inner = card.shrink2(vec2(8.0, 0.0));
 
-        // Visible columns: drop the least important ones until the name column has room
-        let mut cols: Vec<(Col, &str, f32, &str, u8)> = COLS.iter().copied().filter(|c| c.0 != Col::Disk || s.disk_trace).collect();
-        while cols.iter().map(|c| c.2).sum::<f32>() + 230.0 > inner.width() {
-            match cols.iter().enumerate().filter(|(_, c)| c.4 < 9).min_by_key(|(_, c)| c.4) {
-                Some((i, _)) => {
-                    cols.remove(i);
-                }
-                None => break,
-            }
+        // The list on the left, and, while a row is selected, its details on the right
+        let sel_row = self.selected.as_ref().and_then(|(n, pid)| self.rows.iter().find(|r| r.name == *n && r.pid == *pid)).cloned();
+        if sel_row.is_some() {
+            self.inspect = sel_row.clone();
         }
-        let fixed: f32 = cols.iter().map(|c| c.2).sum();
-        let name_w = (inner.width() - fixed - 10.0).max(160.0);
-        let mut xs = Vec::with_capacity(cols.len());
-        let mut x = inner.min.x + name_w;
-        for c in &cols {
-            x += c.2;
-            xs.push(x);
+        let ik = ease(&ctx, egui::Id::new("proc_inspect"), sel_row.is_some());
+        if ik < 0.01 {
+            self.inspect = None;
         }
+        let insp_w = (inner.width() * 0.34).clamp(250.0, 320.0) * ik;
+        let list = Rect::from_min_max(inner.min, pos2(inner.max.x - insp_w, inner.max.y));
+
+        // Four measures, the ones people sort by; the rest lives in the details
+        let disk_col = if s.disk_trace {
+            (Col::Disk, "Disk", "Reads + writes per second that reached the disk (no network, no cache hits).")
+        } else {
+            (Col::Io, "I/O", "Bytes read + written per second across file, network and device I/O.")
+        };
+        let mut cols: Vec<(Col, &str, &str)> = vec![
+            (Col::Cpu, "CPU", "Share of the whole CPU over the last update (100% = every logical processor busy)."),
+            (Col::Ram, "Memory", RAM_TIP),
+            disk_col,
+            (Col::Gpu, "GPU", "Busiest GPU engine this process uses (the way Task Manager counts it)."),
+        ];
+        let mut col_w = ((list.width() - 230.0) / cols.len() as f32).clamp(78.0, 112.0);
+        while cols.len() > 2 && 230.0 + col_w * cols.len() as f32 > list.width() {
+            cols.remove(if cols.len() == 4 { 2 } else { cols.len() - 1 });
+            col_w = ((list.width() - 230.0) / cols.len() as f32).clamp(78.0, 112.0);
+        }
+        let name_w = list.width() - col_w * cols.len() as f32;
+        let xs: Vec<f32> = (0..cols.len()).map(|i| list.min.x + name_w + col_w * (i + 1) as f32).collect();
 
         // Column headers
-        let head = Rect::from_min_size(inner.min, vec2(inner.width(), HEAD_H));
-        p.line_segment([pos2(card.min.x, head.max.y), pos2(card.max.x, head.max.y)], Stroke::new(1.0_f32, border()));
+        let head = Rect::from_min_size(list.min, vec2(list.width(), HEAD_H));
+        p.line_segment([pos2(card.min.x + 14.0, head.max.y), pos2(list.max.x - 6.0, head.max.y)], Stroke::new(1.0_f32, border()));
         let mut header_cell = |ui: &mut Ui, r: Rect, col: Col, title: &str, tip: &str, right: bool| {
             let resp = ui.interact(r, egui::Id::new(("col", col)), Sense::click());
             let (h, _) = hover_fx(&ctx, &resp);
             let on = self.sort == col;
-            p.rect_filled(r.shrink2(vec2(1.0, 5.0)), 6.0, wa((h * 10.0) as u8));
             let colr = if on { hi() } else { mix(txt_faint(), txt(), h) };
-            let (pos, al) = if right { (pos2(r.max.x - 10.0, r.center().y), Align2::RIGHT_CENTER) } else { (pos2(r.min.x + 12.0, r.center().y), Align2::LEFT_CENTER) };
+            let (pos, al) = if right { (pos2(r.max.x - 14.0, r.center().y), Align2::RIGHT_CENTER) } else { (pos2(r.min.x + 14.0, r.center().y), Align2::LEFT_CENTER) };
             let tr = p.text(pos, al, title, sb(11.5), colr);
             if on {
                 let ax = if right { tr.min.x - 9.0 } else { tr.max.x + 9.0 };
@@ -372,19 +378,25 @@ impl TableState {
                 resp.on_hover_text(tip);
             }
         };
-        header_cell(ui, Rect::from_min_max(head.min, pos2(inner.min.x + name_w, head.max.y)), Col::Name, "Name", "", false);
+        header_cell(ui, Rect::from_min_max(head.min, pos2(list.min.x + name_w, head.max.y)), Col::Name, "Name", "", false);
         for (i, c) in cols.iter().enumerate() {
-            let r = Rect::from_min_max(pos2(xs[i] - c.2, head.min.y), pos2(xs[i], head.max.y));
-            header_cell(ui, r, c.0, c.1, c.3, true);
+            let r = Rect::from_min_max(pos2(xs[i] - col_w, head.min.y), pos2(xs[i], head.max.y));
+            header_cell(ui, r, c.0, c.1, c.2, true);
         }
 
         // Rows
-        let body = Rect::from_min_max(pos2(card.min.x, head.max.y + 1.0), pos2(card.max.x, card.max.y - 6.0));
+        let body = Rect::from_min_max(pos2(card.min.x, head.max.y + 1.0), pos2(list.max.x, card.max.y - 6.0));
         let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("proc_body"));
         bui.set_clip_rect(body.intersect(ui.clip_rect()));
-        let total_mem = s.mem.total.max(1) as f32;
-        let total_vram = s.gpus.iter().map(|g| g.dedicated_total).max().unwrap_or(0).max(1) as f32;
         let rows = &self.rows;
+        // The bars under each number compare a row with the busiest one, but never make a
+        // near-idle list look busy: they fill against at least these amounts
+        let top = |f: &dyn Fn(&Row) -> f32, floor: f32| rows.iter().map(f).fold(floor, f32::max);
+        let scale_cpu = top(&|r| r.cpu, 10.0);
+        let scale_ram = top(&|r| r.ram() as f32, 1024.0 * 1048576.0);
+        let disk_trace = s.disk_trace;
+        let scale_disk = top(&|r| (if disk_trace { r.disk } else { r.io }) as f32, 5.0 * 1048576.0);
+        let scale_gpu = top(&|r| r.gpu, 10.0);
         // 0..1 progress of the sort animation, eased; None when settled
         let reorder = match &self.reorder {
             Some((old, at)) if at.elapsed().as_secs_f32() < REORDER_SECS => {
@@ -400,6 +412,7 @@ impl TableState {
         let group = self.group;
         let selected = self.selected.clone();
         let gpu_ok = s.gpu_proc;
+        let sort = self.sort;
         let mut sa = ScrollArea::vertical().auto_shrink(false);
         if let Some(y) = self.scroll_to.take() {
             sa = sa.vertical_scroll_offset(y);
@@ -408,7 +421,7 @@ impl TableState {
             let first = range.start;
             for (j, row) in rows[range].iter().enumerate() {
                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
-                let mut r = Rect::from_min_max(pos2(inner.min.x, r.min.y), pos2(inner.max.x, r.max.y));
+                let mut r = Rect::from_min_max(pos2(list.min.x, r.min.y), pos2(list.max.x - 4.0, r.max.y));
                 // slide from where the row was before the sort; rows from far away start just off screen
                 if let Some((old, k)) = &reorder {
                     let new_i = (first + j) as f32;
@@ -421,45 +434,43 @@ impl TableState {
                 let h = ease(&ctx, id, resp.hovered());
                 let is_sel = selected.as_ref().is_some_and(|(n, pid)| *n == row.name && *pid == row.pid);
                 let selk = ease(&ctx, id.with("sel"), is_sel);
-                let fill = mix(wa((h * 9.0) as u8), ACCENT.gamma_multiply(0.22), selk);
-                p.rect_filled(r.shrink2(vec2(0.0, 1.0)), 7.0, fill);
+                let fill = mix(wa((h * 8.0) as u8), ACCENT.gamma_multiply(0.16), selk);
+                p.rect_filled(r.shrink2(vec2(0.0, 2.0)), 9.0, fill);
                 let cy = r.center().y;
 
-                // name
-                super::icons::paint(&ctx, p, Rect::from_center_size(pos2(r.min.x + 18.0, cy), vec2(18.0, 18.0)), &row.name, row.path.as_ref());
-                let maxw = name_w - 50.0;
+                // name, and a quiet second line
+                super::icons::paint(&ctx, p, Rect::from_center_size(pos2(r.min.x + 22.0, cy), vec2(22.0, 22.0)), &row.name, row.path.as_ref());
+                let maxw = name_w - 64.0;
                 let name = clip(p, &row.name, maxw);
-                let nr = p.text(pos2(r.min.x + 34.0, cy), Align2::LEFT_CENTER, name, reg(12.5), txt());
-                if group && row.count > 1 {
-                    p.text(pos2(nr.max.x + 6.0, cy), Align2::LEFT_CENTER, format!("×{}", row.count), reg(11.5), txt_faint());
-                }
+                p.text(pos2(r.min.x + 44.0, cy - 7.5), Align2::LEFT_CENTER, name, reg(13.0), mix(txt(), hi(), selk));
+                let sub = if group && row.count > 1 {
+                    format!("{} processes", row.count)
+                } else {
+                    match row.pid {
+                        Some(pid) => format!("PID {pid}"),
+                        None => "1 process".into(),
+                    }
+                };
+                p.text(pos2(r.min.x + 44.0, cy + 8.5), Align2::LEFT_CENTER, sub, reg(11.0), txt_faint());
 
                 for (i, c) in cols.iter().enumerate() {
-                    let cell = Rect::from_min_max(pos2(xs[i] - c.2, r.min.y + 3.0), pos2(xs[i], r.max.y - 3.0));
-                    let (text, heat, hcol, dim) = match c.0 {
-                        Col::Pid => (row.pid.map_or_else(|| row.count.to_string(), |p| p.to_string()), 0.0, CPU_COL, true),
-                        Col::Cpu => (fmt::pct(row.cpu), row.cpu / 30.0, CPU_COL, false),
+                    let cell = Rect::from_min_max(pos2(xs[i] - col_w, r.min.y), pos2(xs[i], r.max.y));
+                    let (text, frac, col, idle) = match c.0 {
+                        Col::Cpu => (fmt::pct(row.cpu), row.cpu / scale_cpu, CPU_COL, row.cpu < 0.05),
                         Col::Ram => {
                             if resp.hovered() && ctx.pointer_hover_pos().is_some_and(|q| cell.contains(q)) {
                                 resp.clone().on_hover_text(ram_breakdown(row));
                             }
-                            (fmt::bytes(row.ram()), row.ram() as f32 / total_mem * 6.0, MEM_COL, false)
+                            (fmt::bytes(row.ram()), row.ram() as f32 / scale_ram, MEM_COL, false)
                         }
-                        Col::Io => (fmt::rate(row.io), (row.io / (50.0 * 1048576.0)) as f32, IO_COL, false),
-                        Col::Disk => (fmt::rate(row.disk), (row.disk / (50.0 * 1048576.0)) as f32, DISK_COL, row.disk == 0.0),
+                        Col::Io => (fmt::rate(row.io), row.io as f32 / scale_disk, IO_COL, row.io < 1.0),
+                        Col::Disk => (fmt::rate(row.disk), row.disk as f32 / scale_disk, DISK_COL, row.disk < 1.0),
                         // GPU counters unavailable: unknown, not zero
-                        Col::Gpu | Col::Vram if !gpu_ok => ("—".into(), 0.0, GPU_COL, true),
-                        Col::Gpu => (fmt::pct(row.gpu), row.gpu / 40.0, GPU_COL, false),
-                        Col::Vram => (if row.vram == 0 { "0".into() } else { fmt::bytes(row.vram) }, row.vram as f32 / total_vram * 4.0, VRAM_COL, row.vram == 0),
-                        Col::Threads => (fmt::thousands(row.threads as u64), 0.0, CPU_COL, true),
-                        Col::Handles => (fmt::thousands(row.handles as u64), 0.0, CPU_COL, true),
-                        Col::Name => (String::new(), 0.0, CPU_COL, true),
+                        Col::Gpu if !gpu_ok => ("—".into(), 0.0, GPU_COL, true),
+                        Col::Gpu => (fmt::pct(row.gpu), row.gpu / scale_gpu, GPU_COL, row.gpu < 0.05),
+                        _ => (String::new(), 0.0, CPU_COL, true),
                     };
-                    let k = heat.clamp(0.0, 1.0);
-                    if k > 0.02 {
-                        p.rect_filled(cell.shrink2(vec2(2.0, 0.0)), 5.0, hcol.gamma_multiply(0.08 + 0.32 * k));
-                    }
-                    p.text(pos2(xs[i] - 10.0, cy), Align2::RIGHT_CENTER, text, reg(12.5), if dim { txt_dim() } else { txt() });
+                    metric(p, xs[i] - 14.0, cy, &text, frac, col, sort == c.0, idle);
                 }
 
                 if resp.clicked() {
@@ -485,6 +496,12 @@ impl TableState {
                 });
             }
         });
+        if let Some(row) = self.inspect.clone() {
+            let ir = Rect::from_min_max(pos2(list.max.x, card.min.y), card.max);
+            if let Some(end) = self.inspector(ui, &p, ir, ik, &row, s) {
+                end_req = Some(end);
+            }
+        }
         self.scroll_y = out.state.offset.y;
         self.view_h = out.inner_rect.height();
         if let Some(c) = clicked {
@@ -654,6 +671,102 @@ impl TableState {
         } else if cancel {
             self.confirm = None;
         }
+    }
+
+    /// The details of the selected row, sliding in from the card's right side
+    fn inspector(&mut self, ui: &mut Ui, p: &egui::Painter, r: Rect, k: f32, row: &Row, s: &Snapshot) -> Option<(String, Option<u32>)> {
+        let ctx = ui.ctx().clone();
+        let p = p.with_clip_rect(r.intersect(ui.clip_rect()));
+        let a = k * k;
+        let col = |c: Color32| c.gamma_multiply(a);
+        p.line_segment([pos2(r.min.x, r.min.y + 14.0), pos2(r.min.x, r.max.y - 14.0)], Stroke::new(1.0_f32, col(border())));
+        let x0 = r.min.x + 22.0 + (1.0 - k) * 30.0;
+        let x1 = x0 + r.width().max(250.0) - 44.0;
+        let w = x1 - x0;
+        let mut y = r.min.y + 22.0;
+
+        super::icons::paint(&ctx, &p, Rect::from_min_size(pos2(x0, y), vec2(32.0, 32.0)), &row.name, row.path.as_ref());
+        widgets::fit(&p, pos2(x0 + 44.0, y + 8.0), Align2::LEFT_CENTER, &row.name, sb(15.0), w - 76.0, col(hi()));
+        let who = if self.group && row.count > 1 { format!("{} processes", row.count) } else { row.pid.map_or("1 process".into(), |p| format!("PID {p}")) };
+        p.text(pos2(x0 + 44.0, y + 26.0), Align2::LEFT_CENTER, who, reg(11.5), col(txt_faint()));
+        // close
+        let cr = Rect::from_center_size(pos2(x1 - 8.0, y + 10.0), vec2(22.0, 22.0));
+        let resp = ui.interact(cr, egui::Id::new("inspect_close"), Sense::click());
+        let (h, _) = hover_fx(&ctx, &resp);
+        p.circle_filled(cr.center(), 11.0, col(wa((h * 22.0) as u8)));
+        let c = cr.center();
+        let st = Stroke::new(1.3_f32, col(mix(txt_dim(), hi(), h)));
+        p.line_segment([c + vec2(-3.5, -3.5), c + vec2(3.5, 3.5)], st);
+        p.line_segment([c + vec2(3.5, -3.5), c + vec2(-3.5, 3.5)], st);
+        if resp.clicked() {
+            self.selected = None;
+        }
+        y += 50.0;
+
+        let path = row.path.as_deref().unwrap_or("Windows keeps this program's location private");
+        let lines = p.layout(path.to_string(), reg(11.0), col(txt_dim()), w);
+        let ph = lines.size().y.min(44.0);
+        p.with_clip_rect(Rect::from_min_size(pos2(x0, y), vec2(w, ph)).intersect(p.clip_rect())).galley(pos2(x0, y), lines, col(txt_dim()));
+        y += ph + 18.0;
+
+        let gpu_ok = s.gpu_proc;
+        let stat = |label: &str, value: String, y: &mut f32, strong: bool| {
+            p.text(pos2(x0, *y), Align2::LEFT_CENTER, label, reg(12.0), col(txt_faint()));
+            p.text(pos2(x1, *y), Align2::RIGHT_CENTER, value, reg(12.5), col(if strong { hi() } else { txt() }));
+            *y += 25.0;
+        };
+        let section = |t: &str, y: &mut f32| {
+            p.text(pos2(x0, *y), Align2::LEFT_CENTER, t, sb(10.5), col(txt_faint()));
+            *y += 22.0;
+        };
+        section("ACTIVITY", &mut y);
+        stat("CPU", fmt::pct(row.cpu), &mut y, true);
+        stat("GPU", if gpu_ok { fmt::pct(row.gpu) } else { "—".into() }, &mut y, false);
+        if s.disk_trace {
+            stat("Disk", fmt::rate(row.disk), &mut y, false);
+        }
+        stat("All I/O", fmt::rate(row.io), &mut y, false);
+        y += 8.0;
+        section("MEMORY", &mut y);
+        stat("In RAM", fmt::bytes(row.ram()), &mut y, true);
+        stat("Only this app", fmt::bytes(row.private_ws), &mut y, false);
+        stat("Shared", fmt::bytes(row.shared), &mut y, false);
+        stat("Reserved", fmt::bytes(row.commit), &mut y, false);
+        stat("Video memory", if gpu_ok { fmt::bytes(row.vram) } else { "—".into() }, &mut y, false);
+        y += 8.0;
+        section("INSIDE", &mut y);
+        stat("Threads", fmt::thousands(row.threads as u64), &mut y, false);
+        stat("Handles", fmt::thousands(row.handles as u64), &mut y, false);
+
+        // End task, at the foot of the panel
+        let top = (r.max.y - 56.0).max(y + 6.0);
+        let br = Rect::from_min_max(pos2(x0, top), pos2(x1, top + 34.0));
+        let resp = ui.interact(br, egui::Id::new("inspect_end"), Sense::click());
+        let (h, _) = hover_fx(&ctx, &resp);
+        p.rect_filled(br, 9.0, col(DANGER.gamma_multiply(0.10 + 0.16 * h)));
+        p.rect_stroke(br, 9.0, Stroke::new(1.0_f32, col(DANGER.gamma_multiply(0.45 + 0.3 * h))));
+        p.text(br.center(), Align2::CENTER_CENTER, "End task…", sb(12.5), col(mix(txt(), hi(), h)));
+        (resp.clicked() && k > 0.9).then(|| (row.name.clone(), row.pid))
+    }
+}
+
+/// A number with a thin bar under it: how this row compares with the busiest one. The column
+/// being sorted by stands out; idle values step back.
+#[allow(clippy::too_many_arguments)]
+fn metric(p: &egui::Painter, right: f32, cy: f32, text: &str, frac: f32, col: Color32, active: bool, idle: bool) {
+    let tc = if idle { txt_faint() } else if active { hi() } else { txt() };
+    p.text(pos2(right, cy - 5.5), Align2::RIGHT_CENTER, text, reg(12.5), tc);
+    // an idle value gets no bar at all, so the eye only lands on rows doing something
+    if idle {
+        return;
+    }
+    let bw = 54.0;
+    let track = Rect::from_min_max(pos2(right - bw, cy + 8.0), pos2(right, cy + 11.0));
+    p.rect_filled(track, 1.5, wa(10));
+    let f = frac.clamp(0.0, 1.0);
+    if f > 0.004 {
+        let fill = Rect::from_min_max(track.min, pos2(track.min.x + (bw * f).max(3.0), track.max.y));
+        p.rect_filled(fill, 1.5, col.gamma_multiply(if active { 0.95 } else { 0.5 }));
     }
 }
 

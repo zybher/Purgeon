@@ -270,6 +270,44 @@ fn extract(path: &str, want: i32) -> Option<ColorImage> {
     None
 }
 
+/// Where the file of a process Windows won't name probably is. Windows keeps the path of its own
+/// protected processes (svchost, dwm, WmiPrvSE, Defender's MsMpEng) from programs that aren't
+/// elevated, and the kernel's own entries (System, Registry, Memory Compression) have no file
+/// at all. Their files sit in known places, and reading an icon out of a file needs no access
+/// to the process. The kernel entries get the kernel's file, which shows the plain Windows
+/// program icon, as Task Manager does.
+fn guess(name: &str) -> Option<Arc<str>> {
+    static MEMO: OnceLock<Mutex<HashMap<String, Option<Arc<str>>>>> = OnceLock::new();
+    let key = name.to_ascii_lowercase();
+    let mut m = MEMO.get_or_init(Default::default).lock().ok()?;
+    if let Some(v) = m.get(&key) {
+        return v.clone();
+    }
+    let win = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+    let sys = format!("{win}\\System32");
+    let mut tries: Vec<String> = Vec::new();
+    if key.ends_with(".exe") {
+        tries.push(format!("{sys}\\{name}"));
+        tries.push(format!("{sys}\\wbem\\{name}"));
+        tries.push(format!("{win}\\{name}"));
+        // Defender's own folder: the newest platform version holds the running one
+        let pd = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into());
+        let plat = format!("{pd}\\Microsoft\\Windows Defender\\Platform");
+        if let Ok(rd) = std::fs::read_dir(&plat) {
+            let mut v: Vec<String> = rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            v.sort();
+            if let Some(last) = v.last() {
+                tries.push(format!("{plat}\\{last}\\{name}"));
+            }
+        }
+    } else if matches!(key.as_str(), "system" | "registry" | "memory compression" | "secure system" | "system idle process" | "idle" | "interrupts") {
+        tries.push(format!("{sys}\\ntoskrnl.exe"));
+    }
+    let found = tries.into_iter().find(|t| std::path::Path::new(t).is_file()).map(|t| Arc::from(t.as_str()));
+    m.insert(key, found.clone());
+    found
+}
+
 /// Scales down to `size`, each new pixel the exact average of the area it covers
 fn shrink(img: &ColorImage, size: usize) -> ColorImage {
     let s = img.size[0];
@@ -354,6 +392,14 @@ pub fn retain(ctx: &egui::Context, live: &HashSet<&str>) {
 
 /// Paints the process's icon, or its letter avatar while the icon loads / when it has none
 pub fn paint(ctx: &egui::Context, p: &Painter, r: Rect, name: &str, path: Option<&Arc<str>>) {
+    let guessed;
+    let path = match path {
+        Some(p) => Some(p),
+        None => {
+            guessed = guess(name);
+            guessed.as_ref()
+        }
+    };
     let Some(path) = path else {
         widgets::avatar(p, r, name);
         return;

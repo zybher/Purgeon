@@ -96,5 +96,7 @@ memory" button: emptying every app's memory at once makes the PC slower, not fas
 
 ## Keyboard
 
-On the Processes page: start typing to filter, arrow keys move the selection, Delete ends the
+The Processes page keeps the list to four measures (CPU, memory, disk and GPU, each with a bar
+against the busiest app); click an app for everything else (location, memory split, video
+memory, threads, handles) in a panel on the right. Start typing to filter, arrow keys move the selection, Delete ends the
 selected process after a confirm, Esc clears the search or selection, Ctrl+F focuses search.
