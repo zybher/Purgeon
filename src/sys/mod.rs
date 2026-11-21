@@ -8,6 +8,7 @@ pub mod etw;
 pub mod gpu;
 pub mod net;
 mod pdh;
+pub mod thermal;
 pub mod win;
 #[cfg(feature = "bench")]
 pub mod bench;
@@ -135,6 +136,12 @@ pub struct Snapshot {
     pub h_net: Vec<[Vec<f32>; 2]>,
     /// Per-process network speed is live (running as administrator)
     pub net_trace: bool,
+    /// Per GPU (same order as `gpus`): temperature °C and power W (0 when unknown)
+    pub h_sens: Vec<[Vec<f32>; 2]>,
+    /// Average CPU clock, MHz
+    pub h_mhz: Vec<f32>,
+    /// ACPI thermal zones: (name, °C). Empty on most desktops.
+    pub zones: Vec<(String, f32)>,
 }
 
 pub struct Shared {
@@ -233,6 +240,9 @@ struct Collector {
     net: net::NetSampler,
     /// luid -> (received, sent) history
     h_net: HashMap<u64, [VecDeque<f32>; 2]>,
+    h_sens: HashMap<u64, [VecDeque<f32>; 2]>,
+    h_mhz: VecDeque<f32>,
+    thermal: Option<thermal::ThermalSampler>,
 }
 
 impl Collector {
@@ -278,6 +288,9 @@ impl Collector {
             h_gpu: HashMap::new(),
             net: net::NetSampler::default(),
             h_net: HashMap::new(),
+            h_sens: HashMap::new(),
+            h_mhz: VecDeque::with_capacity(HIST),
+            thermal: thermal::ThermalSampler::new(),
         }
     }
 
@@ -399,6 +412,15 @@ impl Collector {
             push(&mut h[2], d.write as f32);
             h_disk.push(std::array::from_fn(|i| h[i].iter().copied().collect()));
         }
+        let mut h_sens = Vec::with_capacity(gpus.len());
+        for g in &gpus {
+            let h = self.h_sens.entry(g.luid).or_insert_with(|| std::array::from_fn(|_| VecDeque::with_capacity(HIST)));
+            push(&mut h[0], g.sensors.temp.unwrap_or(0.0));
+            push(&mut h[1], g.sensors.power_w.unwrap_or(0.0));
+            h_sens.push(std::array::from_fn(|i| h[i].iter().copied().collect()));
+        }
+        push(&mut self.h_mhz, clocks.avg_mhz);
+        let zones = self.thermal.as_mut().map(|t| t.sample()).unwrap_or_default();
         let (mut h_gpu, mut h_vram) = (Vec::new(), Vec::new());
         for g in &gpus {
             let h = self.h_gpu.entry(g.luid).or_insert_with(|| (VecDeque::with_capacity(HIST), VecDeque::with_capacity(HIST)));
@@ -451,6 +473,9 @@ impl Collector {
             nets,
             h_net,
             net_trace: self.trace.is_some(),
+            h_sens,
+            h_mhz: self.h_mhz.iter().copied().collect(),
+            zones,
         }
     }
 

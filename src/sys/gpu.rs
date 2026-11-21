@@ -61,6 +61,38 @@ pub struct Sensors {
     pub power_w: Option<f32>,
     pub power_limit_w: Option<f32>,
     pub fan_pct: Option<u32>,
+    /// Temperature at which the GPU starts slowing itself down
+    pub slowdown_temp: Option<f32>,
+    pub video_mhz: Option<u32>,
+    /// Highest clocks the card can reach
+    pub core_max_mhz: Option<u32>,
+    pub mem_max_mhz: Option<u32>,
+    /// Performance state, 0 (P0, full speed) .. 15 (idle)
+    pub pstate: Option<u32>,
+    /// PCIe link now and the most the card supports: (generation, lanes)
+    pub pcie: Option<(u32, u32)>,
+    pub pcie_max: Option<(u32, u32)>,
+    /// NVML clock throttle reason bits (see `throttle_text`)
+    pub throttle: Option<u64>,
+}
+
+impl Sensors {
+    /// Why the GPU is running below its top clock, in plain words. None when nothing holds it back.
+    pub fn throttle_text(&self) -> Option<&'static str> {
+        let t = self.throttle?;
+        // HW thermal, SW thermal, HW slowdown, power brake, SW power cap, then idle
+        if t & 0x40 != 0 || t & 0x20 != 0 {
+            Some("Too hot: slowing down to cool off")
+        } else if t & 0x80 != 0 || t & 0x08 != 0 {
+            Some("Hardware slowdown (power supply or temperature)")
+        } else if t & 0x04 != 0 {
+            Some("At its power limit")
+        } else if t & 0x01 != 0 {
+            Some("Idle: nothing needs full speed")
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -325,6 +357,7 @@ type NvHandle = unsafe extern "C" fn(u32, *mut *mut c_void) -> i32;
 type NvName = unsafe extern "C" fn(*mut c_void, *mut u8, u32) -> i32;
 type NvU32 = unsafe extern "C" fn(*mut c_void, *mut u32) -> i32;
 type NvU32Arg = unsafe extern "C" fn(*mut c_void, u32, *mut u32) -> i32;
+type NvU64 = unsafe extern "C" fn(*mut c_void, *mut u64) -> i32;
 
 struct Nvml {
     /// (adapter luid, device handle)
@@ -334,6 +367,14 @@ struct Nvml {
     power: Option<NvU32>,
     limit: Option<NvU32>,
     fan: Option<NvU32>,
+    threshold: Option<NvU32Arg>,
+    max_clock: Option<NvU32Arg>,
+    pstate: Option<NvU32>,
+    pcie_gen: Option<NvU32>,
+    pcie_width: Option<NvU32>,
+    pcie_max_gen: Option<NvU32>,
+    pcie_max_width: Option<NvU32>,
+    throttle: Option<NvU64>,
 }
 
 // The device handles are plain ids owned by the driver; we use them from one thread only
@@ -395,6 +436,14 @@ impl Nvml {
                 power: f!("nvmlDeviceGetPowerUsage", NvU32),
                 limit: f!("nvmlDeviceGetEnforcedPowerLimit", NvU32),
                 fan: f!("nvmlDeviceGetFanSpeed", NvU32),
+                threshold: f!("nvmlDeviceGetTemperatureThreshold", NvU32Arg),
+                max_clock: f!("nvmlDeviceGetMaxClockInfo", NvU32Arg),
+                pstate: f!("nvmlDeviceGetPerformanceState", NvU32),
+                pcie_gen: f!("nvmlDeviceGetCurrPcieLinkGeneration", NvU32),
+                pcie_width: f!("nvmlDeviceGetCurrPcieLinkWidth", NvU32),
+                pcie_max_gen: f!("nvmlDeviceGetMaxPcieLinkGeneration", NvU32),
+                pcie_max_width: f!("nvmlDeviceGetMaxPcieLinkWidth", NvU32),
+                throttle: f!("nvmlDeviceGetCurrentClocksThrottleReasons", NvU64),
             })
         }
     }
@@ -416,6 +465,19 @@ impl Nvml {
             power_w: one(self.power).map(|mw| mw as f32 / 1000.0),
             power_limit_w: one(self.limit).map(|mw| mw as f32 / 1000.0),
             fan_pct: one(self.fan),
+            // NVML_TEMPERATURE_THRESHOLD_SLOWDOWN
+            slowdown_temp: arg(self.threshold, 1).filter(|&t| t > 0).map(|t| t as f32),
+            video_mhz: arg(self.clock, 3),
+            core_max_mhz: arg(self.max_clock, 0),
+            mem_max_mhz: arg(self.max_clock, 2),
+            // NVML_PSTATE_UNKNOWN is 32
+            pstate: one(self.pstate).filter(|&p| p < 16),
+            pcie: one(self.pcie_gen).zip(one(self.pcie_width)),
+            pcie_max: one(self.pcie_max_gen).zip(one(self.pcie_max_width)),
+            throttle: self.throttle.and_then(|f| {
+                let mut v = 0u64;
+                (unsafe { f(h, &mut v) } == 0).then_some(v)
+            }),
         })
     }
 }

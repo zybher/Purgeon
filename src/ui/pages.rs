@@ -1,7 +1,7 @@
 //! Overview, CPU and Memory pages, and the placeholders for what's next.
 
 use super::graph::{self, Graph, Series};
-use super::widgets::{self, Icon};
+use super::widgets;
 use super::Page;
 use crate::anim::*;
 use crate::fmt;
@@ -918,20 +918,230 @@ pub fn gpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     None
 }
 
-pub fn soon(ui: &mut Ui, ic: Icon, title: &str, points: &[&str]) -> Option<Page> {
-    header(ui, title, "Coming in the next update");
-    let w = ui.available_width().min(620.0);
-    let (r, _) = ui.allocate_exact_size(vec2(w, 90.0 + points.len() as f32 * 30.0), Sense::hover());
-    let p = ui.painter();
-    widgets::card(p, r, card());
-    let c = pos2(r.min.x + 38.0, r.min.y + 38.0);
-    p.circle_filled(c, 20.0, wa(10));
-    widgets::icon(p, ic, c, GPU_COL);
-    p.text(pos2(r.min.x + 72.0, r.min.y + 38.0), Align2::LEFT_CENTER, "What this page will show", sb(14.0), txt());
-    for (i, t) in points.iter().enumerate() {
-        let y = r.min.y + 80.0 + i as f32 * 30.0;
-        p.circle_filled(pos2(r.min.x + 40.0, y), 2.5, txt_faint());
-        p.text(pos2(r.min.x + 54.0, y), Align2::LEFT_CENTER, *t, reg(12.5), txt_dim());
+fn temp_label(v: &[f32]) -> String {
+    v.first().map(|t| format!("{t:.0} °C")).unwrap_or_default()
+}
+
+fn watt_label(v: &[f32]) -> String {
+    v.first().map(|w| format!("{w:.0} W")).unwrap_or_default()
+}
+
+fn ghz(mhz: f32) -> String {
+    format!("{:.2} GHz", mhz / 1000.0)
+}
+
+fn mhz_label(v: &[f32]) -> String {
+    v.first().map(|m| ghz(*m)).unwrap_or_default()
+}
+
+/// A labelled graph well (like the Disk page's): returns the area to draw the graph in
+fn well_panel(p: &Painter, r: Rect, title: &str, col: Color32, right: &str) -> Rect {
+    p.rect_filled(r, 8.0, well());
+    p.rect_stroke(r, 8.0, Stroke::new(1.0_f32, border()));
+    caption(p, r.min.x + 8.0, r.min.y + 16.0, title, col);
+    p.text(pos2(r.max.x - 12.0, r.min.y + 16.0), Align2::RIGHT_CENTER, right, reg(10.5), txt_faint());
+    Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 30.0), pos2(r.max.x - 1.0, r.max.y - 6.0))
+}
+
+/// Tiles with an optional tooltip each
+fn tiles_tip(ui: &mut Ui, w: f32, tiles: &[(String, String, Option<Color32>, Option<&str>)]) {
+    let p = ui.painter().clone();
+    let o = ui.cursor().min;
+    let (rects, th) = widgets::tile_grid(o, w, tiles.len(), 170.0, 64.0, 12.0);
+    ui.allocate_exact_size(vec2(w, th), Sense::hover());
+    for (i, (tr, (c, v, dcol, tip))) in rects.iter().zip(tiles).enumerate() {
+        widgets::tile(&p, *tr, c, v, *dcol);
+        if let Some(t) = tip {
+            ui.interact(*tr, ui.id().with(("tile_tip", i, c.as_str())), Sense::hover()).on_hover_text(*t);
+        }
     }
+}
+
+/// A card with a title and a paragraph that wraps
+fn note_card(ui: &mut Ui, w: f32, title: &str, col: Color32, body: &str) {
+    let p = ui.painter().clone();
+    let g = p.layout(body.to_string(), reg(12.5), txt_dim(), w - 36.0);
+    let (r, _) = ui.allocate_exact_size(vec2(w, 58.0 + g.size().y), Sense::hover());
+    widgets::card(&p, r, card());
+    caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, title, col, r.width() - 36.0);
+    p.galley(pos2(r.min.x + 18.0, r.min.y + 42.0), g, txt_dim());
+}
+
+const NO_CPU_TEMP: &str = "Windows has no built-in way to read the CPU's own temperature sensor. Tools that show it load a kernel driver, and the most common one (WinRing0) is on Microsoft's vulnerable driver blocklist and is flagged by anti-cheat. Purgeon does not load any driver.";
+
+pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
+    ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        let w = ui.available_width();
+        let ctx = ui.ctx().clone();
+        header(ui, "Sensors", "Read through Windows and the graphics driver. Purgeon installs no drivers.");
+        let p = ui.painter().clone();
+
+        // ---- GPUs (NVIDIA through NVML, the driver's own monitoring library)
+        for (i, g) in s.gpus.iter().enumerate() {
+            if g.vendor == 0x1414 {
+                continue; // Microsoft Basic Render Driver
+            }
+            let n = &g.sensors;
+            if n.temp.is_none() && n.power_w.is_none() {
+                let why = if g.vendor == 0x10de {
+                    "The NVIDIA driver's monitoring library (nvml.dll) could not be opened, so temperature, power and clocks are unavailable. Reinstalling or updating the NVIDIA driver usually fixes this."
+                } else {
+                    "Temperature, power and clocks are unavailable for this GPU. Windows only reports its usage and memory, which are on the GPU page. NVIDIA cards are supported today."
+                };
+                note_card(ui, w, &g.name, GPU_COL, why);
+                ui.add_space(GAP);
+                continue;
+            }
+            let h = &s.h_sens[i];
+            let (r, _) = ui.allocate_exact_size(vec2(w, 300.0), Sense::hover());
+            widgets::card(&p, r, card());
+            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, &g.name, GPU_COL, r.width() - 36.0);
+            let t = n.temp.unwrap_or(0.0);
+            let tv = glide(&ctx, egui::Id::new(("sens_t", g.luid)), t, 10.0);
+            let sub = match (n.throttle_text(), n.slowdown_temp) {
+                (Some(why), _) if !why.starts_with("Idle") => why.to_string(),
+                (_, Some(sd)) => format!("slows itself down at {sd:.0} °C"),
+                _ => String::new(),
+            };
+            big(&p, r.min.x + 18.0, r.min.y + 60.0, &format!("{tv:.0} °C"), &sub, 30.0);
+
+            let half = (r.width() - 36.0 - GAP) / 2.0;
+            let pa = Rect::from_min_size(pos2(r.min.x + 18.0, r.min.y + 92.0), vec2(half, r.height() - 92.0 - 16.0));
+            let pb = Rect::from_min_size(pos2(pa.max.x + GAP, pa.min.y), pa.size());
+            let tmax = n.slowdown_temp.map_or(100.0, |sd| (sd + 10.0).max(100.0));
+            let ga = well_panel(&p, pa, "Temperature", temp_col(t), &format!("{tmax:.0} °C"));
+            let series = [Series { data: &h[0], col: temp_col(t), fill: true, width: 1.6 }];
+            graph::paint(&p, ga, &Graph { series: &series, max: tmax, scroll, grid: true, hover: hover_in(ui, ga), interval: s.interval, label: &temp_label });
+            let pmax = n.power_limit_w.unwrap_or_else(|| h[1].iter().fold(50.0_f32, |m, v| m.max(*v)) * 1.15);
+            let gb = well_panel(&p, pb, "Power", WARN_COL, &format!("{pmax:.0} W"));
+            let series = [Series { data: &h[1], col: WARN_COL, fill: true, width: 1.6 }];
+            graph::paint(&p, gb, &Graph { series: &series, max: pmax, scroll, grid: true, hover: hover_in(ui, gb), interval: s.interval, label: &watt_label });
+
+            ui.add_space(12.0);
+            let na = || "Unavailable".to_string();
+            let with_max = |c: Option<u32>, m: Option<u32>| match (c, m) {
+                (Some(c), Some(m)) if m > 0 => format!("{c} / {m} MHz"),
+                (Some(c), _) => format!("{c} MHz"),
+                _ => na(),
+            };
+            let mut tiles: Vec<(String, String, Option<Color32>, Option<&str>)> = vec![
+                ("Temperature".into(), n.temp.map_or_else(na, |t| format!("{t:.0} °C")), n.temp.map(temp_col), None),
+                (
+                    "Slows down at".into(),
+                    n.slowdown_temp.map_or_else(na, |t| format!("{t:.0} °C")),
+                    None,
+                    Some("Above this temperature the GPU lowers its clocks to protect itself, and games lose frames."),
+                ),
+                (
+                    "Power".into(),
+                    match (n.power_w, n.power_limit_w) {
+                        (Some(p), Some(l)) => format!("{p:.0} / {l:.0} W"),
+                        (Some(p), None) => format!("{p:.0} W"),
+                        _ => na(),
+                    },
+                    Some(WARN_COL),
+                    Some("Power the card draws now, and the most it is allowed to draw."),
+                ),
+                (
+                    "Fan".into(),
+                    n.fan_pct.map_or_else(na, |f| if f == 0 { "Stopped (0 %)".into() } else { format!("{f} %") }),
+                    None,
+                    Some("Most cards stop their fans when cool, so 0 % at idle is normal."),
+                ),
+                ("Core clock".into(), with_max(n.core_mhz, n.core_max_mhz), None, Some("Current graphics clock / the highest it can boost to.")),
+                ("Memory clock".into(), with_max(n.mem_mhz, n.mem_max_mhz), None, None),
+                ("Video clock".into(), n.video_mhz.map_or_else(na, |c| format!("{c} MHz")), None, Some("Clock of the video encoder and decoder.")),
+                (
+                    "Performance state".into(),
+                    n.pstate.map_or_else(na, |ps| match ps {
+                        0 => "P0 (full speed)".into(),
+                        1..=4 => format!("P{ps} (fast)"),
+                        5..=7 => format!("P{ps} (light load)"),
+                        _ => format!("P{ps} (idle)"),
+                    }),
+                    None,
+                    Some("P0 is full speed. Higher numbers are lower-power states the driver uses when there is little to do."),
+                ),
+                (
+                    "PCIe link".into(),
+                    match (n.pcie, n.pcie_max) {
+                        (Some((g, l)), Some((mg, ml))) if (g, l) != (mg, ml) => format!("Gen {g} x{l} (max Gen {mg} x{ml})"),
+                        (Some((g, l)), _) => format!("Gen {g} x{l}"),
+                        _ => na(),
+                    },
+                    None,
+                    Some("The card drops to a slower link to save power when idle. Under load it should reach its maximum."),
+                ),
+            ];
+            if n.throttle.is_some() {
+                let why = n.throttle_text();
+                let col = match why {
+                    Some(w) if w.starts_with("Too hot") || w.starts_with("Hardware") => Some(DANGER),
+                    Some(w) if w.starts_with("At its power") => Some(WARN_COL),
+                    _ => None,
+                };
+                let v = match why {
+                    None => "Nothing (full boost)".into(),
+                    Some(w) if w.starts_with("Idle") => "Idle".into(),
+                    Some(w) if w.starts_with("At its power") => "Power limit".into(),
+                    Some(w) if w.starts_with("Too hot") => "Temperature".into(),
+                    Some(_) => "Hardware slowdown".into(),
+                };
+                tiles.push((
+                    "Clock held back by".into(),
+                    v,
+                    col,
+                    Some("What is keeping the GPU below its top clock right now, as the NVIDIA driver reports it. Power limit under full load is normal."),
+                ));
+            }
+            tiles_tip(ui, w, &tiles);
+            ui.add_space(GAP + 8.0);
+        }
+
+        // ---- CPU: clocks from Windows; temperature only where the PC exposes a thermal zone
+        let (r, _) = ui.allocate_exact_size(vec2(w, 260.0), Sense::hover());
+        widgets::card(&p, r, card());
+        caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, &s.info.cpu_name, CPU_COL, r.width() - 36.0);
+        let avg = glide(&ctx, egui::Id::new("sens_mhz"), s.clocks.avg_mhz, 10.0);
+        let base = s.info.base_mhz as f32;
+        big(&p, r.min.x + 18.0, r.min.y + 60.0, &ghz(avg), &format!("average clock  ·  base {}", ghz(base)), 30.0);
+        let pr = Rect::from_min_size(pos2(r.min.x + 18.0, r.min.y + 92.0), vec2(r.width() - 36.0, r.height() - 92.0 - 16.0));
+        let peak = s.h_mhz.iter().fold(base * 1.3, |m, v| m.max(*v)) * 1.1;
+        let peak = glide(&ctx, egui::Id::new("sens_mhz_peak"), peak, 4.0);
+        let gr = well_panel(&p, pr, "Average clock", CPU_COL, &ghz(peak));
+        let series = [Series { data: &s.h_mhz, col: CPU_COL, fill: true, width: 1.6 }];
+        graph::paint(&p, gr, &Graph { series: &series, max: peak, scroll, grid: true, hover: hover_in(ui, gr), interval: s.interval, label: &mhz_label });
+        ui.add_space(12.0);
+        let fastest = s.clocks.mhz.iter().copied().fold(0.0_f32, f32::max);
+        let slowest = s.clocks.mhz.iter().copied().fold(f32::MAX, f32::min);
+        let mut tiles: Vec<(String, String, Option<Color32>, Option<&str>)> = vec![
+            ("Average clock".into(), ghz(s.clocks.avg_mhz), Some(CPU_COL), None),
+            ("Fastest thread".into(), if fastest > 0.0 { ghz(fastest) } else { "Unavailable".into() }, None, None),
+            ("Slowest thread".into(), if slowest < f32::MAX { ghz(slowest) } else { "Unavailable".into() }, None, Some("Idle cores run slower or sleep to save power.")),
+            ("Base clock".into(), ghz(base), None, Some("The rated speed. Boost clocks above it are normal when the CPU is cool and has power to spare.")),
+        ];
+        if s.zones.is_empty() {
+            tiles.push(("CPU temperature".into(), "Unavailable".into(), None, Some(NO_CPU_TEMP)));
+        }
+        for (name, c) in &s.zones {
+            tiles.push((
+                format!("Thermal zone {name}"),
+                format!("{c:.0} °C"),
+                Some(temp_col(*c)),
+                Some("A motherboard temperature reported through ACPI. The PC maker decides what it measures; it is often near the CPU but is not the CPU's own sensor, and on some PCs it never changes."),
+            ));
+        }
+        tiles_tip(ui, w, &tiles);
+        ui.add_space(GAP + 8.0);
+
+        note_card(
+            ui,
+            w,
+            "Not shown: CPU temperature, motherboard sensors and fan speeds",
+            txt_faint(),
+            &format!("{NO_CPU_TEMP} GPU readings above come from the graphics driver's own monitoring library, which games' overlays use too."),
+        );
+        ui.add_space(GAP);
+    });
     None
 }

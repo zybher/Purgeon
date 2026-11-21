@@ -40,7 +40,7 @@ const NAV: [(Page, Icon, &str, bool); 8] = [
     (Page::Disk, Icon::Disk, "Disk", true),
     (Page::Network, Icon::Network, "Network", true),
     (Page::Gpu, Icon::Gpu, "GPU", true),
-    (Page::Sensors, Icon::Sensors, "Sensors", false),
+    (Page::Sensors, Icon::Sensors, "Sensors", true),
 ];
 
 pub struct App {
@@ -334,11 +334,7 @@ impl eframe::App for App {
                         Page::Disk => pages::disk(&mut cui, &s, scroll),
                         Page::Network => pages::network(&mut cui, &s, scroll),
                         Page::Gpu => pages::gpu(&mut cui, &s, scroll),
-                        Page::Sensors => pages::soon(&mut cui, Icon::Sensors, "Sensors", &[
-                            "GPU temperature, clocks, fan and power (NVML on NVIDIA)",
-                            "CPU package and per-core temperatures",
-                            "Some sensors need Purgeon to run as administrator",
-                        ]),
+                        Page::Sensors => pages::sensors(&mut cui, &s, scroll),
                     };
                     if let Some(pg) = nav {
                         self.go(pg);
