@@ -24,6 +24,8 @@ and write down anything that looks wrong.
 - [ ] In exclusive fullscreen games the bar doesn't show (expected). Switching the game to borderless makes it show
 - [ ] The RAM number for a game looks right next to the Processes page
 - [ ] With Windows' animation effects turned off, the bar appears instantly, with no slide
+- [ ] The bar is easy to read at a glance on the ultrawide. If the text feels too small, say so and it can get a size setting (125%, 150%) or scale up on wide screens by itself
+- [ ] The System side's two rows read clearly: LOAD (how busy CPU, GPU, RAM are, plus download speed) and TEMP (how hot). CPU temperature shows "—" on purpose, since reading it needs a driver
 
 ## Elevate (administrator mode)
 - [ ] Clicking Elevate and approving UAC restarts Purgeon as administrator
