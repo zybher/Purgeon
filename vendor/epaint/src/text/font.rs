@@ -62,24 +62,44 @@ impl Default for GlyphInfo {
 
 // ----------------------------------------------------------------------------
 
+static SUBPIXEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Draw letters on the red, green and blue parts of each pixel (as ClearType does):
+/// 0 = off (grey edges), 1 = screens with R,G,B left to right, 2 = B,G,R.
+/// Set it before any text is drawn; letters already drawn keep their kind.
+pub fn set_subpixel(order: u8) {
+    SUBPIXEL.store(order.min(2), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A glyph drawn for subpixels takes three texels per pixel, and its texel x is moved right by
+/// twice the atlas width, so the painter sees u >= 2 and knows to read three texels per pixel
+/// (see egui_glow's fragment shader)
+pub const SUBPIXEL_U_SHIFT: f32 = 2.0;
+
+/// FreeType's default LCD filter: spreads each subpixel a little onto its neighbours, so
+/// edges don't show colour fringes
+const LCD_FILTER: [u32; 5] = [0x08, 0x4D, 0x56, 0x4D, 0x08];
+
 /// The font file's bytes and its index in the file, for drawing hinted letters
 pub(crate) type RawFont = (Arc<[u8]>, u32);
 
 /// Collects a hinted outline as a path for the rasterizer, flipped so y points down
-struct Pen(Vec<zeno::Command>);
+/// (the second field stretches x: 3 for subpixel drawing)
+struct Pen(Vec<zeno::Command>, f32);
 
 impl skrifa::outline::OutlinePen for Pen {
     fn move_to(&mut self, x: f32, y: f32) {
-        self.0.push(zeno::Command::MoveTo([x, -y].into()));
+        self.0.push(zeno::Command::MoveTo([x * self.1, -y].into()));
     }
     fn line_to(&mut self, x: f32, y: f32) {
-        self.0.push(zeno::Command::LineTo([x, -y].into()));
+        self.0.push(zeno::Command::LineTo([x * self.1, -y].into()));
     }
     fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
-        self.0.push(zeno::Command::QuadTo([cx, -cy].into(), [x, -y].into()));
+        self.0.push(zeno::Command::QuadTo([cx * self.1, -cy].into(), [x * self.1, -y].into()));
     }
     fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
-        self.0.push(zeno::Command::CurveTo([cx0, -cy0].into(), [cx1, -cy1].into(), [x, -y].into()));
+        let k = self.1;
+        self.0.push(zeno::Command::CurveTo([cx0 * k, -cy0].into(), [cx1 * k, -cy1].into(), [x * k, -y].into()));
     }
     fn close(&mut self) {
         self.0.push(zeno::Command::Close);
@@ -307,12 +327,16 @@ impl FontImpl {
         let hinter = self.hinter.get_or_init(|| self.make_hinter()).as_ref()?;
         let font = skrifa::FontRef::from_index(&self.raw.0, self.raw.1).ok()?;
         let glyph = font.outline_glyphs().get(skrifa::GlyphId::new(glyph_id.0 as _))?;
-        let mut pen = Pen(Vec::new());
+        let order = SUBPIXEL.load(std::sync::atomic::Ordering::Relaxed);
+        let mut pen = Pen(Vec::new(), if order == 0 { 1.0 } else { 3.0 });
         glyph.draw(DrawSettings::hinted(hinter, false), &mut pen).ok()?;
         if pen.0.is_empty() {
             return Some(UvRect::default());
         }
         let (data, place) = zeno::Mask::new(&pen.0).format(zeno::Format::Alpha).render();
+        if order != 0 {
+            return self.subpixel_glyph(&data, place, order);
+        }
         let (w, h) = (place.width as usize, place.height as usize);
         if w == 0 || h == 0 {
             return Some(UvRect::default());
@@ -341,6 +365,55 @@ impl FontImpl {
             size: vec2(w as f32, h as f32) / self.pixels_per_point,
             min: [glyph_pos.0 as u16, glyph_pos.1 as u16],
             max: [(glyph_pos.0 + w) as u16, (glyph_pos.1 + h) as u16],
+        })
+    }
+
+    /// Places a glyph drawn three times as wide: filters it, and stores three texels per pixel
+    fn subpixel_glyph(&self, data: &[u8], place: zeno::Placement, order: u8) -> Option<UvRect> {
+        let (ws, h) = (place.width as i32, place.height as usize);
+        if ws == 0 || h == 0 {
+            return Some(UvRect::default());
+        }
+        if data.len() < ws as usize * h {
+            return None;
+        }
+        // whole pixels covering the glyph plus the filter's reach of two subpixels each side
+        let px0 = (place.left - 2).div_euclid(3);
+        let px1 = (place.left + ws + 2 + 2).div_euclid(3);
+        let w = (px1 - px0) as usize;
+        let tw = w * 3;
+        let gamma = TEXT_GAMMA;
+        let atlas_w = self.atlas.lock().size()[0];
+        let glyph_pos = {
+            let atlas = &mut self.atlas.lock();
+            let (glyph_pos, image) = atlas.allocate((tw, h));
+            for y in 0..h {
+                let row = &data[y * ws as usize..(y + 1) * ws as usize];
+                let raw = |s: i32| -> u32 {
+                    let i = s - place.left;
+                    if (0..ws).contains(&i) { row[i as usize] as u32 } else { 0 }
+                };
+                for t in 0..tw as i32 {
+                    let s = px0 * 3 + t;
+                    let v: u32 = (0..5).map(|k| LCD_FILTER[k as usize] * raw(s - 2 + k)).sum::<u32>() / 256;
+                    if v == 0 {
+                        continue;
+                    }
+                    // texels are always R, G, B; on a B,G,R screen the left subpixel is blue
+                    let tt = if order == 2 { t - t % 3 + (2 - t % 3) } else { t } as usize;
+                    // the atlas lifts every pixel to the power 0.55 when it is uploaded; undo that here
+                    image[(glyph_pos.0 + tt, glyph_pos.1 + y)] = (v.min(255) as f32 / 255.0).powf(gamma / 0.55);
+                }
+            }
+            glyph_pos
+        };
+        let shift = (SUBPIXEL_U_SHIFT as usize) * atlas_w;
+        let offset_in_pixels = vec2(px0 as f32, place.top as f32);
+        Some(UvRect {
+            offset: offset_in_pixels / self.pixels_per_point + self.y_offset_in_points * Vec2::Y,
+            size: vec2(w as f32, h as f32) / self.pixels_per_point,
+            min: [(shift + glyph_pos.0) as u16, glyph_pos.1 as u16],
+            max: [(shift + glyph_pos.0 + tw) as u16, (glyph_pos.1 + h) as u16],
         })
     }
 

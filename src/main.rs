@@ -56,6 +56,7 @@ fn main() -> eframe::Result<()> {
     }
     alerts::load();
     boost::load();
+    egui::epaint::text::set_subpixel(platform::subpixel_order());
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
         .with_inner_size([1180.0, 760.0])

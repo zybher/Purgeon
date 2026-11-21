@@ -16,6 +16,8 @@ bench = []
 # (snapped to the pixel grid the way Windows does), so small text is sharp, not soft
 [patch.crates-io]
 epaint = { path = "vendor/epaint" }
+# and egui's OpenGL painter, which draws that text per subpixel (ClearType-like) when it is on
+egui_glow = { path = "vendor/egui_glow" }
 
 [profile.release]
 codegen-units = 1

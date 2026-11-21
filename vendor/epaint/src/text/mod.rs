@@ -2,6 +2,7 @@
 
 pub mod cursor;
 mod font;
+pub use font::{set_subpixel, SUBPIXEL_U_SHIFT};
 mod fonts;
 mod text_layout;
 mod text_layout_types;

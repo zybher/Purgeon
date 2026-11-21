@@ -32,6 +32,7 @@ and write down anything that looks wrong.
 
 ## Sharp text
 - [ ] Text in the window and the bar looks as crisp as other Windows apps next to it (no soft, smeared edges), and bold labels still look bold
+- [ ] Text uses ClearType like the rest of Windows (very close up, letter edges have faint blue/orange tints, like in File Explorer). If it shows colour fringes on your screen, say so; turning ClearType off in Windows ("Adjust ClearType text") makes Purgeon use plain grey edges too
 
 ## Settings page
 - [ ] Size: on Auto, the bar on the ultrawide is 125% (the Settings card says so). Is it easy to read at a glance now? Try 150% too

@@ -353,3 +353,24 @@ pub fn end_process(pid: u32, name: &str) -> Result<(), String> {
         }
     }
 }
+
+/// How text edges are drawn, following Windows' own ClearType setting: 0 = grey edges,
+/// 1 = per subpixel on R,G,B screens, 2 = on B,G,R screens. `PURGEON_SUBPIXEL=0/1/2` overrides it.
+pub fn subpixel_order() -> u8 {
+    if let Some(v) = std::env::var("PURGEON_SUBPIXEL").ok().and_then(|v| v.parse().ok()) {
+        return v;
+    }
+    let get = |action: u32| -> u32 {
+        let mut v: u32 = 0;
+        let ok = unsafe { win::SystemParametersInfoW(action, 0, &mut v as *mut u32 as *mut _, 0) };
+        if ok != 0 { v } else { 0 }
+    };
+    const SPI_GETFONTSMOOTHING: u32 = 0x004A;
+    const SPI_GETFONTSMOOTHINGTYPE: u32 = 0x200A;
+    const SPI_GETFONTSMOOTHINGORIENTATION: u32 = 0x2012;
+    // FE_FONTSMOOTHINGCLEARTYPE = 2; orientation 0 = BGR, 1 = RGB
+    if get(SPI_GETFONTSMOOTHING) == 0 || get(SPI_GETFONTSMOOTHINGTYPE) != 2 {
+        return 0;
+    }
+    if get(SPI_GETFONTSMOOTHINGORIENTATION) == 0 { 2 } else { 1 }
+}
