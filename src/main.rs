@@ -20,6 +20,11 @@ fn main() -> eframe::Result<()> {
         sys::bench::run(secs);
         return Ok(());
     }
+    #[cfg(feature = "bench")]
+    if let Some(i) = std::env::args().position(|a| a == "--load") {
+        sys::bench::load(&std::env::args().skip(i + 1).collect::<Vec<_>>());
+        return Ok(());
+    }
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
         .with_inner_size([1180.0, 760.0])

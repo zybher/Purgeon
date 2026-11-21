@@ -1,9 +1,7 @@
 # How Purgeon measures things
 
 This page says where every number comes from, how it is calculated, and where it can be wrong.
-Nothing here is a benchmark result. Claims about being more accurate than Task Manager stay
-"pending verification" until `cargo run --release --features bench -- --bench` has been run on a
-few machines and the results are written down below.
+Measured results from the bench are at the end, under [Measured results](#measured-results).
 
 Purgeon reads all of its data from system-wide sources: `NtQuerySystemInformation`, Windows
 performance counters (PDH), DXGI, NVML on NVIDIA, and, when running as administrator, a kernel
@@ -153,10 +151,51 @@ charged to a different process, for example `dwm.exe`.
 cargo run --release --features bench -- --bench
 ```
 
-This writes `bench-results.md` with Purgeon's figures next to perfmon's for the same moments, and
-Purgeon's own cost (time per update, CPU and memory). It is CPU-light, but don't run it while
-gaming if you want clean numbers. Results go in the table below once collected.
+This writes `bench-results.md`. It has two parts and takes about two minutes:
 
-| Machine | Total CPU vs `% Processor Time` | Per-process sum vs total | Private WS vs perfmon | Purgeon CPU at 1 s | Purgeon RAM |
-|---|---|---|---|---|---|
-| i7-14700F, Windows 11 (one manual run) | 14.0% vs 13.8% | 13.8% vs 13.8% | exact (top 3) | pending | about 17 MB |
+1. **Idle:** 20 seconds of Purgeon's figures next to perfmon's for the same moments, and
+   Purgeon's own cost.
+2. **Known loads:** a copy of Purgeon (`purgeon-load.exe`, in the temp folder, below-normal
+   priority) does a measured amount of work and reports it. The bench then checks how much of it
+   Purgeon saw, and how much the Windows counter Task Manager is built on saw. The loads are kept
+   small: 4 threads of 28 spinning for 15 s, the same 4 threads running 3 ms on and 10 ms off,
+   512 MB of RAM held for 8 s, and 256 MB written to a delete-on-close temp file at 32 MB/s. Each
+   load exits on its own within 60 s. Nothing touches the GPU, needs administrator or loads a
+   driver.
+
+## Measured results
+
+i7-14700F (28 logical processors), Windows 11, standard user, two runs on 21 November 2026.
+"Error" is (seen − truth) / truth. For CPU, the truth is the time the load's threads measured
+themselves running, with any pause over 50 µs left out.
+
+| Load | Truth | Purgeon (run 1, run 2) | Windows counter (run 1, run 2) |
+|---|---|---|---|
+| Steady CPU, 4 threads for 15 s | 59.8 CPU-seconds | +0.2%, +0.9% | −0.7%, −0.3% (`Process % Processor Time`) |
+| Bursty CPU, 3 ms on, 10 ms off | 13.5 CPU-seconds | +0.3%, +1.7% | −1.1%, −1.5% |
+| 512 MB allocated and touched | 512.0 MB | 512.0 MB, exact | 512.0 MB, exact (`Working Set - Private`) |
+| 256 MB written by one program | 256.0 MB | +0.1%, −0.1% | 0.0%, 0.0% (`IO Write Bytes/sec`) |
+
+Idle, 20 samples at 1 s:
+
+| Check | Mean | p95 |
+|---|---|---|
+| Total CPU vs `% Processor Time` (points) | 0.52 | 1.08 |
+| Sum of per-process CPU vs total (points) | 1.40 | 3.70 |
+| Task Manager's `% Processor Utility` minus `% Processor Time` (points) | 0.76 | 3.12 |
+| Private working set vs perfmon, processes over 50 MB (error %) | 0.002 | 0.000 |
+| Time per update (ms) | 12.6 | 16.8 |
+| Purgeon's own CPU, sampler only (%) | 0.066 | 0.073 |
+
+Purgeon with its window open used about 51 MB of private working set.
+
+**What this shows.** On this machine Purgeon is as accurate as Windows' own counters, not more.
+Both stay within 2% of a known CPU load. Purgeon reads slightly high and the Windows counter
+slightly low, by about the same amount. The bursty test was meant to catch the 15.6 ms timer-tick
+undercount described above. It did not show up here: the Windows counter was within 1.5%.
+Something on the PC may have raised the timer rate, which makes tick accounting finer, so other
+machines may still differ. Memory and per-program disk writes match exactly, because Purgeon and
+Task Manager read the same values.
+
+Not tested yet: GPU and VRAM, administrator mode (per-program physical disk and network), and
+other CPUs.
