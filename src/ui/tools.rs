@@ -9,7 +9,7 @@ use crate::theme::*;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, Rect, RichText, Sense, Ui};
 use std::sync::Mutex;
 
-pub const H: f32 = 258.0;
+pub const H: f32 = 214.0;
 
 struct State {
     /// The app picked in the Boost list (exe), before Boost is clicked
@@ -41,14 +41,6 @@ fn button(ui: &mut Ui, r: Rect, id: impl std::hash::Hash, label: &str, primary: 
     c.add_enabled(enabled, b.min_size(r.size())).clicked()
 }
 
-/// A wrapped paragraph; returns the y below it
-fn para(ui: &Ui, x: f32, y: f32, w: f32, text: &str, col: Color32) -> f32 {
-    let g = ui.painter().layout(text.to_string(), reg(12.0), col, w);
-    let h = g.size().y;
-    ui.painter().galley(pos2(x, y), g, col);
-    y + h
-}
-
 /// A status line with a coloured dot
 fn line(ui: &Ui, x: f32, y: f32, w: f32, dot: Color32, text: &str) {
     let p = ui.painter();
@@ -58,16 +50,31 @@ fn line(ui: &Ui, x: f32, y: f32, w: f32, dot: Color32, text: &str) {
 
 const OK: Color32 = GPU_COL;
 
+/// A small rounded label; returns its right edge
+fn pill(p: &egui::Painter, x: f32, y: f32, text: &str, dot: Color32) -> f32 {
+    let g = p.layout_no_wrap(text.to_string(), reg(11.5), txt_dim());
+    let r = Rect::from_min_size(pos2(x, y - 11.0), vec2(g.size().x + 28.0, 22.0));
+    p.rect_filled(r, 11.0, well());
+    p.circle_filled(pos2(r.min.x + 11.0, y), 3.0, dot);
+    p.galley(pos2(r.min.x + 19.0, y - g.size().y / 2.0), g, txt_dim());
+    r.max.x
+}
+
 fn boost_card(ui: &mut Ui, r: Rect) {
     let p = ui.painter().clone();
     widgets::card(&p, r, card());
     let (x, w) = (r.min.x + 18.0, r.width() - 36.0);
     super::pages::caption_w(&p, x, r.min.y + 24.0, "Boost an app", ACCENT, w);
-    let foot = "Helps a little when your CPU is busy. It can't add FPS when the graphics card is what holds a game back.";
+    ui.interact(r, egui::Id::new("boost_card"), Sense::hover()).on_hover_text(
+        "While the app runs, Windows serves it first (priority Above normal) and uses the High performance power plan. \
+         Everything goes back when it closes, and Purgeon boosts it again every time it runs. It helps a little when \
+         the CPU is busy, and can't add FPS when the graphics card is what holds a game back.",
+    );
+    let foot = "Helps when the CPU is busy, not when the GPU is the limit";
 
     match boost::status() {
         None => {
-            let y = para(ui, x, r.min.y + 44.0, w, "Pick a game or app. While it runs, Windows serves it first and uses its fastest power plan. Everything goes back when it closes.", txt_dim());
+            let y = r.min.y + 38.0;
             let open = apps::open_apps();
             let mut st = state();
             if st.pick.as_ref().is_some_and(|e| !open.iter().any(|a| &a.exe == e)) {
@@ -98,37 +105,40 @@ fn boost_card(ui: &mut Ui, r: Rect) {
                     state().pick = None;
                 }
             }
-            para(ui, x, r.max.y - 44.0, w, foot, txt_faint());
+            // what a boost does, at a glance
+            let px = pill(&p, x, y + 76.0, "Higher priority", ACCENT);
+            let px = pill(&p, px + 8.0, y + 76.0, "Fast power plan", ACCENT);
+            pill(&p, px + 8.0, y + 76.0, "Undone when it closes", OK);
+            widgets::fit(&p, pos2(x, r.max.y - 20.0), Align2::LEFT_CENTER, foot, reg(12.0), w, txt_faint());
         }
         Some(b) => {
             let nr = widgets::fit(&p, pos2(x, r.min.y + 56.0), Align2::LEFT_CENTER, &b.name, sb(20.0), w - 110.0, hi());
             p.text(pos2(nr.max.x + 8.0, r.min.y + 58.0), Align2::LEFT_CENTER, if b.running { "boosted" } else { "not running" }, reg(12.0), txt_faint());
             let y = r.min.y + 90.0;
             if !b.running {
-                line(ui, x, y, w, txt_faint(), &format!("Waiting for {} to start. Nothing is changed until then.", b.name));
+                line(ui, x, y, w, txt_faint(), "Waiting for it to start");
             } else {
                 let (dot, t) = match b.priority {
-                    Priority::Raised => (OK, "Priority raised to Above normal".to_string()),
-                    Priority::LeftAlone => (txt_faint(), "Priority was already changed, so it's left alone".to_string()),
-                    Priority::Refused => (WARN_COL, format!("{} doesn't allow a priority change (anti-cheat or admin)", b.name)),
+                    Priority::Raised => (OK, "Priority: Above normal".to_string()),
+                    Priority::LeftAlone => (txt_faint(), "Priority: already changed, left alone".to_string()),
+                    Priority::Refused => (WARN_COL, "Priority: blocked by the app (anti-cheat)".to_string()),
                     Priority::Waiting => (txt_faint(), "Priority: waiting".to_string()),
                 };
                 line(ui, x, y, w, dot, &t);
                 let (dot, t) = match &b.plan {
-                    Plan::Switched(was) => (OK, format!("Power plan: High performance (goes back to {was} afterwards)")),
-                    Plan::AlreadyHigh => (OK, "Power plan: already High performance".to_string()),
-                    Plan::Missing => (txt_faint(), "This PC has no High performance power plan, so that part is skipped".to_string()),
-                    Plan::Skipped => (txt_faint(), "Power plan left alone in screenshot mode".to_string()),
+                    Plan::Switched(was) => (OK, format!("Power plan: High performance (was {was})")),
+                    Plan::AlreadyHigh => (OK, "Power plan: High performance".to_string()),
+                    Plan::Missing => (txt_faint(), "Power plan: none faster on this PC".to_string()),
+                    Plan::Skipped => (txt_faint(), "Power plan: left alone (test mode)".to_string()),
                     Plan::Usual => (txt_faint(), "Power plan: switching…".to_string()),
                 };
                 line(ui, x, y + 26.0, w, dot, &t);
             }
-            line(ui, x, y + 52.0, w, txt_faint(), "Purgeon remembers this and boosts it every time it runs");
-            let br = Rect::from_min_size(pos2(x, y + 76.0), vec2(110.0, 30.0));
+            let br = Rect::from_min_size(pos2(x, y + 62.0), vec2(110.0, 30.0));
             if button(ui, br, "boost_stop", "Stop boost", false, true) {
                 boost::stop();
             }
-            para(ui, x, r.max.y - 44.0, w, foot, txt_faint());
+            widgets::fit(&p, pos2(x, r.max.y - 20.0), Align2::LEFT_CENTER, foot, reg(12.0), w, txt_faint());
         }
     }
 }
@@ -138,33 +148,44 @@ fn free_card(ui: &mut Ui, r: Rect) {
     widgets::card(&p, r, card());
     let (x, w) = (r.min.x + 18.0, r.width() - 36.0);
     super::pages::caption_w(&p, x, r.min.y + 24.0, "Free up memory", MEM_COL, w - 120.0);
+    ui.interact(r, egui::Id::new("free_card"), Sense::hover()).on_hover_text(
+        "Apps over 200 MB that you haven't used for 10 minutes (never in front, near 0% CPU and GPU). \
+         Closing one gives its memory back. Purgeon never closes anything without asking you first.",
+    );
     let skip = boost::status().map(|b| b.exe);
     let sg = apps::suggestions(skip.as_deref());
-    p.text(pos2(r.max.x - 18.0, r.min.y + 24.0), Align2::RIGHT_CENTER, format!("{:.0}% of RAM free", sg.avail_frac * 100.0), reg(12.0), txt_faint());
+    // how full RAM is, as a bar
+    let free = sg.avail_frac.clamp(0.0, 1.0);
+    let fcol = if free > 0.25 { OK } else if free > 0.1 { WARN_COL } else { DANGER };
+    p.text(pos2(r.max.x - 18.0, r.min.y + 24.0), Align2::RIGHT_CENTER, format!("{:.0}% free", free * 100.0), sb(12.5), fcol);
+    widgets::meter(&p, Rect::from_min_size(pos2(x, r.min.y + 44.0), vec2(w, 6.0)), 1.0 - free, MEM_COL);
 
-    let mut y = r.min.y + 44.0;
-    let intro = if sg.avail_frac > 0.25 {
-        "You have plenty of free memory, so closing apps won't speed anything up right now."
-    } else {
-        "Apps you haven't used for 10 minutes that hold a lot of memory. Closing one gives its memory back."
-    };
-    y = para(ui, x, y, w, intro, txt_dim()) + 10.0;
+    let mut y = r.min.y + 64.0;
+    if free > 0.25 && !sg.apps.is_empty() {
+        line(ui, x, y, w, OK, "Plenty free, closing apps won't speed things up now");
+        y += 18.0;
+    }
 
     let row_h = 34.0;
     let room = ((r.max.y - 40.0 - y) / row_h).floor().max(0.0) as usize;
     if sg.apps.is_empty() {
-        let t = match sg.warming {
-            Some(left) => format!("Nothing yet. Purgeon needs to watch for 10 minutes first ({} min to go).", (left.as_secs() + 59) / 60),
-            None => "Nothing to suggest. No app over 200 MB has sat unused for 10 minutes.".to_string(),
-        };
-        para(ui, x, y + 4.0, w, &t, txt_faint());
+        match sg.warming {
+            // still watching: how far along, as a progress bar
+            Some(left) => {
+                line(ui, x, y + 4.0, w - 90.0, txt_faint(), "Watching for unused apps");
+                p.text(pos2(x + w, y + 4.0), Align2::RIGHT_CENTER, format!("{} min left", (left.as_secs() + 59) / 60), reg(12.0), txt_faint());
+                let done = 1.0 - left.as_secs_f32() / apps::IDLE_FOR.as_secs_f32();
+                widgets::meter(&p, Rect::from_min_size(pos2(x, y + 22.0), vec2(w, 3.0)), done.clamp(0.0, 1.0), txt_faint());
+            }
+            None => line(ui, x, y + 4.0, w, OK, "No unused apps to close"),
+        }
     }
     for (i, a) in sg.apps.iter().take(room).enumerate() {
         let rr = Rect::from_min_size(pos2(r.min.x + 8.0, y + i as f32 * row_h), vec2(r.width() - 16.0, row_h));
         super::icons::paint(ui.ctx(), &p, Rect::from_center_size(pos2(rr.min.x + 20.0, rr.center().y), vec2(18.0, 18.0)), &a.exe, a.path.as_ref());
         let br = Rect::from_min_size(pos2(rr.max.x - 10.0 - 70.0, rr.center().y - 13.0), vec2(70.0, 26.0));
         let mins = a.idle.as_secs() / 60;
-        let idle = if mins >= 120 { format!("unused {} h", mins / 60) } else { format!("unused {mins} min") };
+        let idle = if mins >= 120 { format!("idle {} h", mins / 60) } else { format!("idle {mins} min") };
         let tr = p.text(pos2(br.min.x - 12.0, rr.center().y), Align2::RIGHT_CENTER, format!("{}  ·  {idle}", fmt::bytes(a.mem)), reg(12.0), txt_faint());
         widgets::fit(&p, pos2(rr.min.x + 36.0, rr.center().y), Align2::LEFT_CENTER, &a.name, reg(12.5), tr.min.x - 12.0 - (rr.min.x + 36.0), txt());
         if button(ui, br, ("free_close", i), "Close…", false, !sg.busy) {
@@ -176,7 +197,7 @@ fn free_card(ui: &mut Ui, r: Rect) {
     } else if let Some((t, ok)) = &sg.note {
         (t.clone(), if *ok { OK } else { WARN_COL })
     } else {
-        ("Purgeon never closes anything without asking you first.".to_string(), txt_faint())
+        (String::new(), txt_faint())
     };
     widgets::fit(&p, pos2(x, r.max.y - 20.0), Align2::LEFT_CENTER, &foot.0, reg(12.0), w, foot.1);
     if sg.busy {
