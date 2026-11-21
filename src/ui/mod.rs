@@ -170,7 +170,6 @@ impl App {
         let pill = Rect::from_min_size(pos2(rect.min.x + 12.0, gy), vec2(rect.width() - 24.0, item_h));
         p.rect_filled(pill, 9.0, Color32::from_gray(0x23));
         p.rect_stroke(pill, 9.0, Stroke::new(1.0_f32, Color32::from_gray(0x2c)));
-        p.rect_filled(Rect::from_min_size(pos2(pill.min.x + 1.0, pill.center().y - 8.0), vec2(3.0, 16.0)), 1.5, ACCENT);
 
         let mut go = None;
         for (i, (page, ic, label, ready)) in NAV.iter().enumerate() {

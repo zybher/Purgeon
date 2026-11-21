@@ -11,6 +11,8 @@ use std::time::Instant;
 
 const ROW_H: f32 = 28.0;
 const HEAD_H: f32 = 34.0;
+/// How long rows take to slide to their new places after the sort changes
+const REORDER_SECS: f32 = 0.38;
 const RAM_TIP: &str = "How much of your RAM this app is holding right now, including memory it shares with other apps. This is what lowers your available RAM. Point at a number to see what it is made of.";
 const COL_NAMES: [(Col, &str); 10] = [
     (Col::Name, "name"),
@@ -106,6 +108,8 @@ pub struct TableState {
     scroll_y: f32,
     view_h: f32,
     scroll_to: Option<f32>,
+    /// Where each row was before the user changed the sort, and when: rows slide from there
+    reorder: Option<(HashMap<(String, Option<u32>), usize>, Instant)>,
 }
 
 impl Default for TableState {
@@ -123,6 +127,7 @@ impl Default for TableState {
             scroll_y: 0.0,
             view_h: 400.0,
             scroll_to: None,
+            reorder: None,
         }
     }
 }
@@ -158,6 +163,12 @@ impl TableState {
         let key = (s.seq as usize, self.sort, self.desc, self.group, self.search.clone());
         if self.key.as_ref() == Some(&key) {
             return;
+        }
+        // A new sort order (not a data update or a search) animates rows to their new places
+        let resorted = self.key.as_ref().is_some_and(|k| (k.1, k.2, k.3) != (key.1, key.2, key.3) && k.4 == key.4);
+        if resorted && !reduced() && self.group == self.key.as_ref().map_or(self.group, |k| k.3) {
+            let old = self.rows.iter().enumerate().map(|(i, r)| ((r.name.clone(), r.pid), i)).collect();
+            self.reorder = Some((old, Instant::now()));
         }
         self.key = Some(key);
         let q = self.search.trim().to_lowercase();
@@ -374,6 +385,16 @@ impl TableState {
         let total_mem = s.mem.total.max(1) as f32;
         let total_vram = s.gpus.iter().map(|g| g.dedicated_total).max().unwrap_or(0).max(1) as f32;
         let rows = &self.rows;
+        // 0..1 progress of the sort animation, eased; None when settled
+        let reorder = match &self.reorder {
+            Some((old, at)) if at.elapsed().as_secs_f32() < REORDER_SECS => {
+                ctx.request_repaint();
+                let t = at.elapsed().as_secs_f32() / REORDER_SECS;
+                Some((old, egui::emath::easing::cubic_in_out(t)))
+            }
+            _ => None,
+        };
+        let view_h = self.view_h;
         let mut clicked: Option<(String, Option<u32>)> = None;
         let mut end_req: Option<(String, Option<u32>)> = None;
         let group = self.group;
@@ -384,9 +405,17 @@ impl TableState {
             sa = sa.vertical_scroll_offset(y);
         }
         let out = sa.show_rows(&mut bui, ROW_H, rows.len(), |ui, range| {
-            for row in &rows[range] {
+            let first = range.start;
+            for (j, row) in rows[range].iter().enumerate() {
                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
-                let r = Rect::from_min_max(pos2(inner.min.x, r.min.y), pos2(inner.max.x, r.max.y));
+                let mut r = Rect::from_min_max(pos2(inner.min.x, r.min.y), pos2(inner.max.x, r.max.y));
+                // slide from where the row was before the sort; rows from far away start just off screen
+                if let Some((old, k)) = &reorder {
+                    let new_i = (first + j) as f32;
+                    let from = old.get(&(row.name.clone(), row.pid)).map_or(new_i + 3.0, |&i| i as f32);
+                    let off = ((from - new_i) * pitch).clamp(-view_h - ROW_H, view_h + ROW_H) * (1.0 - k);
+                    r = r.translate(vec2(0.0, off));
+                }
                 let p = ui.painter();
                 let id = egui::Id::new(("row", &row.name, row.pid));
                 let h = ease(&ctx, id, resp.hovered());
