@@ -69,14 +69,15 @@ fn main() -> eframe::Result<()> {
         .with_resizable(true)
         .with_icon(platform::app_icon());
     if std::env::var_os("PURGEON_SHOT").is_some() {
-        viewport = viewport.with_position([-5000.0, 40.0]).with_active(false);
+        viewport = viewport.with_position([-20000.0, -20000.0]).with_active(false);
     } else if autostart::started_in_tray() {
         // opens off-screen and goes to the tray on its first frame (see `platform::hide_window`)
         viewport = viewport.with_position([-32000.0, -32000.0]).with_active(false);
     }
     let options = eframe::NativeOptions {
         viewport,
-        centered: true,
+        // centring replaces any position given above, which put screenshot windows on the desktop
+        centered: std::env::var_os("PURGEON_SHOT").is_none(),
         ..Default::default()
     };
     eframe::run_native(TITLE, options, Box::new(|cc| Ok(Box::new(ui::App::new(cc)))))

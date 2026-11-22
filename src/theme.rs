@@ -8,7 +8,7 @@ pub fn chrome() -> Color32 {
 }
 /// The content sheet behind the pages
 pub fn bg() -> Color32 {
-    Color32::from_gray(0x14)
+    Color32::from_gray(0x23)
 }
 /// Cards
 pub fn card() -> Color32 {

@@ -65,11 +65,6 @@ fn boost_card(ui: &mut Ui, r: Rect) {
     widgets::card(&p, r, card());
     let (x, w) = (r.min.x + 18.0, r.width() - 36.0);
     super::pages::caption_w(&p, x, r.min.y + 24.0, "Boost an app", ACCENT, w);
-    ui.interact(r, egui::Id::new("boost_card"), Sense::hover()).on_hover_text(
-        "While the app runs, Windows serves it first (priority Above normal) and uses the High performance power plan. \
-         Everything goes back when it closes, and Purgeon boosts it again every time it runs. It helps a little when \
-         the CPU is busy, and can't add FPS when the graphics card is what holds a game back.",
-    );
     let foot = "Helps when the CPU is busy, not when the GPU is the limit";
 
     match boost::status() {
@@ -148,10 +143,6 @@ fn free_card(ui: &mut Ui, r: Rect) {
     widgets::card(&p, r, card());
     let (x, w) = (r.min.x + 18.0, r.width() - 36.0);
     super::pages::caption_w(&p, x, r.min.y + 24.0, "Free up memory", MEM_COL, w - 120.0);
-    ui.interact(r, egui::Id::new("free_card"), Sense::hover()).on_hover_text(
-        "Apps over 200 MB that you haven't used for 10 minutes (never in front, near 0% CPU and GPU). \
-         Closing one gives its memory back. Purgeon never closes anything without asking you first.",
-    );
     let skip = boost::status().map(|b| b.exe);
     let sg = apps::suggestions(skip.as_deref());
     // how full RAM is, as a bar

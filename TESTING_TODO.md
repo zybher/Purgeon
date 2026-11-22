@@ -97,13 +97,15 @@ and write down anything that looks wrong.
 - [ ] The scroll bar on Dashboard, CPU, Memory, Disk, Network, GPU, Sensors and Settings sits at the window's right edge
 - [ ] The lighter content panel's rounded top-left corner has no thin line over its left edge
 - [ ] Watch a graph's left end for a few updates: it slides along with the rest, with no gap flashing in before the new sample pushes it left
-- [ ] Scroll any page down: the cards fade out softly as they reach the top of the panel, with no grey strip or hard edge. At the top of the page nothing is faded
+- [ ] Scroll any page down: cards slide straight under the title bar, with no dark band, fade or strip
+- [ ] Dashboard: open the Memory card and scroll until its chart is off screen: the six boxes under it keep exactly the same grey
+- [ ] Every scroll bar is just a grey thumb with no track, easy to see and to drag
+- [ ] Hover around every page: no explanatory tooltips. Graphs still show value and time; a process's Memory number still shows its split
 - [ ] Processes page: svchost, dwm, WmiPrvSE, MsMpEng and System show an icon instead of a letter (svchost, dwm and System get the plain Windows program icon, like in Task Manager)
 - [ ] Processes page: each row shows the name with its PID underneath, then CPU, Memory, Disk (or I/O) and GPU with a thin bar under each number; rows doing nothing show no bars
 - [ ] Processes page: click a row and a details panel slides in on the right (location, CPU, GPU, I/O, the memory split, video memory, threads, handles, End task). The × or Esc closes it; clicking the row again also closes it
 - [ ] Processes page: End task in the details panel asks first, as before
 - [ ] Dashboard: the "busy apps" card now sits under the four cards and shows the five apps holding the most memory as tiles, biggest first, all in GB (the bars are sized against the biggest). Hover a tile to see the exe name and how many processes it has
-- [ ] Hovering the Boost and Free up memory cards shows the longer explanation that used to be written out on the card
 - [ ] Processes page: when the order changes, the row slide feels neither too fast nor too slow
 
 ## Accuracy

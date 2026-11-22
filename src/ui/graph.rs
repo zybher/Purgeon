@@ -78,7 +78,7 @@ pub fn paint(p: &Painter, rect: Rect, g: &Graph) {
         .collect();
     for (s, v) in g.series.iter().zip(&vals) {
         let q = pos2(x, yof(*v));
-        p.circle_filled(q, 4.0, bg());
+        p.circle_filled(q, 4.0, card());
         p.circle_filled(q, 3.0, s.col);
     }
     let text = format!("{}  ·  {}", (g.label)(&vals), crate::fmt::ago((n - 1 - i) as f32 * g.interval));

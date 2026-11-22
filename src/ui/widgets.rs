@@ -218,7 +218,7 @@ pub fn icon(p: &Painter, kind: Icon, c: Pos2, col: Color32) {
         }
         Icon::Sensors => {
             p.line_segment([c + vec2(0.0, -7.0), c + vec2(0.0, 2.5)], Stroke::new(3.6_f32, col));
-            p.line_segment([c + vec2(0.0, -6.5), c + vec2(0.0, 2.5)], Stroke::new(1.6_f32, bg()));
+            p.line_segment([c + vec2(0.0, -6.5), c + vec2(0.0, 2.5)], Stroke::new(1.6_f32, chrome()));
             p.circle_filled(c + vec2(0.0, 4.5), 3.6, col);
             p.line_segment([c + vec2(0.0, -1.0), c + vec2(0.0, 4.0)], Stroke::new(1.6_f32, col));
         }

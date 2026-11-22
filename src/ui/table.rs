@@ -13,7 +13,6 @@ const ROW_H: f32 = 46.0;
 const HEAD_H: f32 = 34.0;
 /// How long rows take to slide to their new places after the sort changes
 const REORDER_SECS: f32 = 0.38;
-const RAM_TIP: &str = "How much of your RAM this app is holding right now, including memory it shares with other apps. This is what lowers your available RAM. Point at a number to see what it is made of.";
 const COL_NAMES: [(Col, &str); 10] = [
     (Col::Name, "name"),
     (Col::Pid, "pid"),
@@ -41,10 +40,10 @@ pub enum Col {
     Handles,
 }
 
-/// The RAM cell's hover text, in plain words
+/// The RAM cell's hover readout: the values only
 fn ram_breakdown(r: &Row) -> String {
     format!(
-        "In RAM: {}\n   Only this app: {}  (Task Manager's \"Memory\")\n   Shared with other apps: {}\n\nReserved: {}\nMemory the app has asked Windows to set aside. It can be more than what is in RAM, and keeps growing if the app leaks memory.",
+        "In RAM  {}\nOnly this app  {}\nShared  {}\nReserved  {}",
         fmt::bytes(r.ram()),
         fmt::bytes(r.private_ws),
         fmt::bytes(r.shared),
@@ -261,7 +260,7 @@ impl TableState {
         p.text(pos2(hr.min.x, hr.min.y + 40.0), Align2::LEFT_CENTER, sub, reg(12.5), txt_faint());
 
         let sw = Rect::from_min_size(pos2(hr.max.x - 36.0, hr.min.y + 9.0), vec2(36.0, 21.0));
-        widgets::switch(ui, sw, &mut self.group).on_hover_text("Sum processes that share a name (all chrome.exe as one row)");
+        widgets::switch(ui, sw, &mut self.group);
         p.text(pos2(sw.min.x - 10.0, sw.center().y), Align2::RIGHT_CENTER, "Group by name", reg(12.5), txt_dim());
 
         let sr = Rect::from_min_size(pos2(sw.min.x - 128.0 - 260.0, hr.min.y + 4.0), vec2(260.0, 31.0));
@@ -328,16 +327,11 @@ impl TableState {
 
         // Four measures, the ones people sort by; the rest lives in the details
         let disk_col = if s.disk_trace {
-            (Col::Disk, "Disk", "Reads + writes per second that reached the disk (no network, no cache hits).")
+            (Col::Disk, "Disk")
         } else {
-            (Col::Io, "I/O", "Bytes read + written per second across file, network and device I/O.")
+            (Col::Io, "I/O")
         };
-        let mut cols: Vec<(Col, &str, &str)> = vec![
-            (Col::Cpu, "CPU", "Share of the whole CPU over the last update (100% = every logical processor busy)."),
-            (Col::Ram, "Memory", RAM_TIP),
-            disk_col,
-            (Col::Gpu, "GPU", "Busiest GPU engine this process uses (the way Task Manager counts it)."),
-        ];
+        let mut cols: Vec<(Col, &str)> = vec![(Col::Cpu, "CPU"), (Col::Ram, "Memory"), disk_col, (Col::Gpu, "GPU")];
         let mut col_w = ((list.width() - 230.0) / cols.len() as f32).clamp(78.0, 112.0);
         while cols.len() > 2 && 230.0 + col_w * cols.len() as f32 > list.width() {
             cols.remove(if cols.len() == 4 { 2 } else { cols.len() - 1 });
@@ -349,7 +343,7 @@ impl TableState {
         // Column headers
         let head = Rect::from_min_size(list.min, vec2(list.width(), HEAD_H));
         p.line_segment([pos2(card.min.x + 14.0, head.max.y), pos2(list.max.x - 6.0, head.max.y)], Stroke::new(1.0_f32, border()));
-        let mut header_cell = |ui: &mut Ui, r: Rect, col: Col, title: &str, tip: &str, right: bool| {
+        let mut header_cell = |ui: &mut Ui, r: Rect, col: Col, title: &str, right: bool| {
             let resp = ui.interact(r, egui::Id::new(("col", col)), Sense::click());
             let (h, _) = hover_fx(&ctx, &resp);
             let on = self.sort == col;
@@ -374,14 +368,11 @@ impl TableState {
                     self.desc = col != Col::Name;
                 }
             }
-            if !tip.is_empty() {
-                resp.on_hover_text(tip);
-            }
         };
-        header_cell(ui, Rect::from_min_max(head.min, pos2(list.min.x + name_w, head.max.y)), Col::Name, "Name", "", false);
+        header_cell(ui, Rect::from_min_max(head.min, pos2(list.min.x + name_w, head.max.y)), Col::Name, "Name", false);
         for (i, c) in cols.iter().enumerate() {
             let r = Rect::from_min_max(pos2(xs[i] - col_w, head.min.y), pos2(xs[i], head.max.y));
-            header_cell(ui, r, c.0, c.1, c.2, true);
+            header_cell(ui, r, c.0, c.1, true);
         }
 
         // Rows

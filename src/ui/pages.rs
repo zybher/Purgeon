@@ -148,44 +148,6 @@ fn top_list_w(ui: &mut Ui, r: Rect, title: &str, col: Color32, rows: &[(&Group, 
     }
 }
 
-/// What a CPU reading means, for tooltips
-fn cpu_note(v: f32) -> String {
-    if v < 50.0 {
-        format!("{v:.0}% busy. Normal: below 50% the CPU has plenty of room.")
-    } else if v < 85.0 {
-        format!("{v:.0}% busy. High but fine for games, builds and exports. Above 85% for long, programs start waiting for the CPU.")
-    } else {
-        format!("{v:.0}% busy. The CPU is close to full and programs may stutter. Top CPU below shows what is using it.")
-    }
-}
-
-/// What a memory reading means, for tooltips
-fn mem_note(frac: f32) -> String {
-    let v = frac * 100.0;
-    if frac < 0.75 {
-        format!("{v:.0}% in use. Normal: Windows uses spare memory as cache and gives it back when needed.")
-    } else if frac < 0.9 {
-        format!("{v:.0}% in use. Getting full: Windows starts compressing memory, which costs some CPU.")
-    } else {
-        format!("{v:.0}% in use. Nearly full: Windows is moving memory to the page file on disk, which is much slower. Closing the biggest users in Top memory helps.")
-    }
-}
-
-/// What a GPU reading means, for tooltips
-fn gpu_note(util: f32, vram_frac: f32) -> String {
-    let u = if util < 90.0 {
-        format!("GPU {util:.0}% busy. Normal.")
-    } else {
-        format!("GPU {util:.0}% busy. Fully used, which is expected while gaming: the game is limited by the GPU, not the CPU.")
-    };
-    let v = if vram_frac < 0.9 {
-        format!("VRAM {:.0}% full. Fine.", vram_frac * 100.0)
-    } else {
-        format!("VRAM {:.0}% full. Above 90% games can stutter as textures spill into slower system memory.", vram_frac * 100.0)
-    };
-    format!("{u}\n{v}")
-}
-
 /// "Your PC has plenty of headroom", then up to five programs in plain words
 fn summary(ui: &mut Ui, s: &Snapshot, w: f32) {
     let groups = grouped(s);
@@ -207,7 +169,7 @@ fn summary(ui: &mut Ui, s: &Snapshot, w: f32) {
         ("Plenty of headroom", GPU_COL)
     };
 
-    let (r, resp) = ui.allocate_exact_size(vec2(w, if hogs.is_empty() { 84.0 } else { 140.0 }), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(vec2(w, if hogs.is_empty() { 84.0 } else { 140.0 }), Sense::hover());
     let p = ui.painter().clone();
     widgets::card(&p, r, card());
     p.circle_filled(pos2(r.min.x + 22.0, r.min.y + 26.0), 4.0, col);
@@ -236,7 +198,6 @@ fn summary(ui: &mut Ui, s: &Snapshot, w: f32) {
         let procs = if g.count > 1 { format!("{} processes", g.count) } else { "1 process".into() };
         ui.interact(t, egui::Id::new(("top_app", i)), Sense::hover()).on_hover_text(format!("{}  ·  {procs}", g.name));
     }
-    resp.on_hover_text("The five programs holding the most memory, all their processes counted together. The Processes page shows everything.");
 }
 
 /// The four cards at the top of the dashboard; one at a time can be opened for more detail
@@ -255,17 +216,6 @@ fn busiest_disk(s: &Snapshot) -> Option<usize> {
     (0..s.disks.len()).max_by(|&a, &b| load(a).total_cmp(&load(b)))
 }
 
-/// What a disk reading means, for tooltips
-fn disk_note(active: f32) -> String {
-    if active < 50.0 {
-        format!("{active:.0}% active. Normal: the disk has time to spare.")
-    } else if active < 90.0 {
-        format!("{active:.0}% active. Busy (an install, an update, a game loading). Fine for a while.")
-    } else {
-        format!("{active:.0}% active. The disk is the bottleneck: programs wait for it. The Disk page shows what is reading and writing.")
-    }
-}
-
 /// A small chevron: pointing down when the card is open, right when it can be opened
 fn chevron(p: &Painter, c: egui::Pos2, open: f32, col: Color32) {
     let a = open * std::f32::consts::FRAC_PI_2;
@@ -280,7 +230,7 @@ pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
-        super::page_top(ui);
+        ui.add_space(super::PAGE_TOP);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         header(ui, "Dashboard", &format!("{}  ·  up {}", s.info.cpu_name, fmt::uptime(s.uptime)));
@@ -317,7 +267,7 @@ pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
             let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 104.0), pos2(r.max.x - 1.0, r.max.y - 10.0));
             let (x, vy, sy) = (r.min.x + 18.0, r.min.y + 58.0, r.min.y + 86.0);
             let sub_w = r.width() - 36.0;
-            let note = match part {
+            match part {
                 Part::Cpu => {
                     let v = glide(&ctx, egui::Id::new("ov_cpu_v"), s.cpu, 10.0);
                     big(&p, x, vy, &format!("{v:.0}%"), "", 30.0);
@@ -328,7 +278,6 @@ pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                     widgets::fit(&p, pos2(x, sy), Align2::LEFT_CENTER, &sub, reg(12.0), sub_w, txt_faint());
                     let series = [Series { data: &s.h_cpu, col: CPU_COL, fill: true, width: 1.6 }];
                     graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
-                    cpu_note(s.cpu)
                 }
                 Part::Mem => {
                     let used = glide(&ctx, egui::Id::new("ov_mem_v"), s.mem.used() as f32 / 1073741824.0, 10.0);
@@ -338,7 +287,6 @@ pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                     widgets::fit(&p, pos2(x, sy), Align2::LEFT_CENTER, &sub, reg(12.0), sub_w, txt_faint());
                     let series = [Series { data: &s.h_mem, col: MEM_COL, fill: true, width: 1.6 }];
                     graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
-                    mem_note(s.mem.used_frac())
                 }
                 Part::Disk => match disk {
                     Some(di) => {
@@ -350,12 +298,10 @@ pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                         widgets::fit(&p, pos2(x, sy), Align2::LEFT_CENTER, &sub, reg(12.0), sub_w, txt_faint());
                         let series = [Series { data: &s.h_disk[di][0], col: DISK_COL, fill: true, width: 1.6 }];
                         graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
-                        disk_note(d.active)
                     }
                     None => {
                         big(&p, x, vy, "—", "", 30.0);
                         p.text(pos2(x, sy), Align2::LEFT_CENTER, "No disk counters found", reg(12.0), txt_faint());
-                        String::new()
                     }
                 },
                 Part::Gpu => match gpu {
@@ -374,20 +320,15 @@ pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                             Series { data: &s.h_vram[gi], col: VRAM_COL, fill: false, width: 1.1 },
                         ];
                         graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
-                        gpu_note(g.util, g.dedicated_used as f32 / g.dedicated_total.max(1) as f32)
                     }
                     None => {
                         big(&p, x, vy, "—", "", 30.0);
                         p.text(pos2(x, sy), Align2::LEFT_CENTER, "No GPU counters found", reg(12.0), txt_faint());
-                        String::new()
                     }
                 },
-            };
+            }
             if resp.clicked() {
                 open = if is_open { None } else { Some(part) };
-            }
-            if !note.is_empty() {
-                resp.on_hover_text(format!("{note}\n\nClick for details."));
             }
         }
         ctx.data_mut(|d| d.insert_temp(open_id, open));
@@ -562,7 +503,7 @@ pub fn cpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
-        super::page_top(ui);
+        ui.add_space(super::PAGE_TOP);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         header(ui, "CPU", &s.info.cpu_name);
@@ -602,12 +543,6 @@ pub fn cpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         ui.allocate_exact_size(vec2(w, h), Sense::hover());
         for (r, (c, v)) in rects.iter().zip(&tiles) {
             widgets::tile(&p, *r, c, v, None);
-            if *c == "Task Manager figure" {
-                ui.interact(*r, egui::Id::new("tm_tip"), Sense::hover()).on_hover_text(
-                    "Task Manager's \"% Processor Utility\": busy time multiplied by how fast the clock ran versus base speed. \
-                     It reads high when the CPU turbo-boosts and low when it parks. \"Utilization\" is the plain share of time the cores were busy.",
-                );
-            }
         }
 
         ui.add_space(GAP);
@@ -639,7 +574,7 @@ pub fn memory(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
-        super::page_top(ui);
+        ui.add_space(super::PAGE_TOP);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         let m = &s.mem;
@@ -664,16 +599,16 @@ pub fn memory(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         ui.add_space(GAP);
         let (r, _) = ui.allocate_exact_size(vec2(w, 104.0), Sense::hover());
         widgets::card(&p, r, card());
-        let segs: Vec<(&str, u64, Color32, &str)> = match m.lists {
+        let segs: Vec<(&str, u64, Color32)> = match m.lists {
             Some(l) => vec![
-                ("In use", m.total.saturating_sub(m.avail).saturating_sub(l.modified), MEM_COL, "Memory used by processes, drivers and the system"),
-                ("Modified", l.modified, WARN_COL, "Changed pages that must be written to disk before they can be reused"),
-                ("Standby", l.standby, KERNEL_COL, "Cached data that is not in use, freed instantly when needed"),
-                ("Free", l.free + l.zero, Color32::from_gray(0x55), "Memory that holds nothing"),
+                ("In use", m.total.saturating_sub(m.avail).saturating_sub(l.modified), MEM_COL),
+                ("Modified", l.modified, WARN_COL),
+                ("Standby", l.standby, KERNEL_COL),
+                ("Free", l.free + l.zero, Color32::from_gray(0x55)),
             ],
             None => vec![
-                ("In use", m.used(), MEM_COL, "Memory used by processes, drivers and the system"),
-                ("Available", m.avail, Color32::from_gray(0x55), "Standby cache plus free memory, ready for programs"),
+                ("In use", m.used(), MEM_COL),
+                ("Available", m.avail, Color32::from_gray(0x55)),
             ],
         };
         let bar = Rect::from_min_max(pos2(r.min.x + 18.0, r.min.y + 18.0), pos2(r.max.x - 18.0, r.min.y + 46.0));
@@ -681,7 +616,7 @@ pub fn memory(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let total: u64 = segs.iter().map(|x| x.1).sum::<u64>().max(1);
         let mut x = bar.min.x;
         let mut lx = r.min.x + 18.0;
-        for (i, (name, b, col, tip)) in segs.iter().enumerate() {
+        for (i, (name, b, col)) in segs.iter().enumerate() {
             let fw = glide(&ctx, egui::Id::new(("seg", i)), *b as f32 / total as f32, 8.0) * bar.width();
             let sr = Rect::from_min_size(pos2(x, bar.min.y), vec2(fw.max(0.0), bar.height()));
             let resp = ui.interact(sr, egui::Id::new(("segh", i)), Sense::hover());
@@ -693,7 +628,6 @@ pub fn memory(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                 se: if i == segs.len() - 1 { 7.0 } else { 0.0 },
             };
             p.rect_filled(sr.shrink2(vec2(0.5, 0.0)), rounding, mix(*col, hi(), h * 0.25));
-            resp.on_hover_text(format!("{name}: {}\n{tip}", fmt::bytes(*b)));
             x += fw;
             // legend
             let ly = r.max.y - 30.0;
@@ -760,7 +694,7 @@ pub fn disk(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
-        super::page_top(ui);
+        ui.add_space(super::PAGE_TOP);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         let total_r: f64 = s.disks.iter().map(|d| d.read).sum();
@@ -875,7 +809,7 @@ pub fn network(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
-        super::page_top(ui);
+        ui.add_space(super::PAGE_TOP);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         let down: f64 = s.nets.iter().map(|a| a.rx).sum();
@@ -1005,11 +939,8 @@ pub fn network(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                 (*g, c.total() as f32, t)
             })
             .collect();
-        let (r, resp) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
+        let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
         top_list_w(ui, r, "Open connections", NET_UP_COL, &rows, 250.0);
-        resp.on_hover_text(
-            "Connected: TCP connections to another computer or server. Listening: ports the program waits on for others to connect. UDP: sockets used by games, voice chat and DNS, which have no connection state.",
-        );
         if rows.is_empty() {
             p.text(pos2(r.min.x + 18.0, r.min.y + 60.0), Align2::LEFT_CENTER, "No open connections", reg(12.5), txt_faint());
         }
@@ -1054,7 +985,7 @@ pub fn gpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
-        super::page_top(ui);
+        ui.add_space(super::PAGE_TOP);
         let w = ui.available_width();
         let top = ui.cursor().min;
         let g = &s.gpus[sel];
@@ -1191,17 +1122,14 @@ fn well_panel(p: &Painter, r: Rect, title: &str, col: Color32, right: &str) -> R
     Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 30.0), pos2(r.max.x - 1.0, r.max.y - 6.0))
 }
 
-/// Tiles with an optional tooltip each
-fn tiles_tip(ui: &mut Ui, w: f32, tiles: &[(String, String, Option<Color32>, Option<&str>)]) {
+/// A row of tiles, wrapping as needed
+fn tile_row(ui: &mut Ui, w: f32, tiles: &[(String, String, Option<Color32>)]) {
     let p = ui.painter().clone();
     let o = ui.cursor().min;
     let (rects, th) = widgets::tile_grid(o, w, tiles.len(), 170.0, 64.0, 12.0);
     ui.allocate_exact_size(vec2(w, th), Sense::hover());
-    for (i, (tr, (c, v, dcol, tip))) in rects.iter().zip(tiles).enumerate() {
+    for (tr, (c, v, dcol)) in rects.iter().zip(tiles) {
         widgets::tile(&p, *tr, c, v, *dcol);
-        if let Some(t) = tip {
-            ui.interact(*tr, ui.id().with(("tile_tip", i, c.as_str())), Sense::hover()).on_hover_text(*t);
-        }
     }
 }
 
@@ -1215,13 +1143,12 @@ fn note_card(ui: &mut Ui, w: f32, title: &str, col: Color32, body: &str) {
     p.galley(pos2(r.min.x + 18.0, r.min.y + 42.0), g, txt_dim());
 }
 
-const NO_CPU_TEMP: &str = "Windows has no built-in way to read the CPU's own temperature sensor. Tools that show it load a kernel driver, which anti-cheat can flag. Purgeon never loads one, so there is nothing extra to install and nothing for anti-cheat to object to.";
 
 pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
         ui.set_max_width(ui.available_width() - super::PAGE_PAD);
-        super::page_top(ui);
+        ui.add_space(super::PAGE_TOP);
         let w = ui.available_width();
         let ctx = ui.ctx().clone();
         header(ui, "Sensors", "Read through Windows and the graphics driver. Purgeon installs no drivers.");
@@ -1275,13 +1202,12 @@ pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                 (Some(c), _) => format!("{c} MHz"),
                 _ => na(),
             };
-            let mut tiles: Vec<(String, String, Option<Color32>, Option<&str>)> = vec![
-                ("Temperature".into(), n.temp.map_or_else(na, |t| format!("{t:.0} °C")), n.temp.map(temp_col), None),
+            let mut tiles: Vec<(String, String, Option<Color32>)> = vec![
+                ("Temperature".into(), n.temp.map_or_else(na, |t| format!("{t:.0} °C")), n.temp.map(temp_col)),
                 (
                     "Slows down at".into(),
                     n.slowdown_temp.map_or_else(na, |t| format!("{t:.0} °C")),
                     None,
-                    Some("Above this temperature the GPU lowers its clocks to protect itself, and games lose frames."),
                 ),
                 (
                     "Power".into(),
@@ -1291,17 +1217,15 @@ pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                         _ => na(),
                     },
                     Some(WARN_COL),
-                    Some("Power the card draws now, and the most it is allowed to draw."),
                 ),
                 (
                     "Fan".into(),
                     n.fan_pct.map_or_else(na, |f| if f == 0 { "Stopped (0 %)".into() } else { format!("{f} %") }),
                     None,
-                    Some("Most cards stop their fans when cool, so 0 % at idle is normal."),
                 ),
-                ("Core clock".into(), with_max(n.core_mhz, n.core_max_mhz), None, Some("Current graphics clock / the highest it can boost to.")),
-                ("Memory clock".into(), with_max(n.mem_mhz, n.mem_max_mhz), None, None),
-                ("Video clock".into(), n.video_mhz.map_or_else(na, |c| format!("{c} MHz")), None, Some("Clock of the video encoder and decoder.")),
+                ("Core clock".into(), with_max(n.core_mhz, n.core_max_mhz), None),
+                ("Memory clock".into(), with_max(n.mem_mhz, n.mem_max_mhz), None),
+                ("Video clock".into(), n.video_mhz.map_or_else(na, |c| format!("{c} MHz")), None),
                 (
                     "Performance state".into(),
                     n.pstate.map_or_else(na, |ps| match ps {
@@ -1311,7 +1235,6 @@ pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                         _ => format!("P{ps} (idle)"),
                     }),
                     None,
-                    Some("P0 is full speed. Higher numbers are lower-power states the driver uses when there is little to do."),
                 ),
                 (
                     "PCIe link".into(),
@@ -1321,7 +1244,6 @@ pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                         _ => na(),
                     },
                     None,
-                    Some("The card drops to a slower link to save power when idle. Under load it should reach its maximum."),
                 ),
             ];
             if n.throttle.is_some() {
@@ -1342,10 +1264,9 @@ pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
                     "Clock held back by".into(),
                     v,
                     col,
-                    Some("What is keeping the GPU below its top clock right now, as the NVIDIA driver reports it. Power limit under full load is normal."),
                 ));
             }
-            tiles_tip(ui, w, &tiles);
+            tile_row(ui, w, &tiles);
             ui.add_space(GAP + 8.0);
         }
 
@@ -1365,24 +1286,23 @@ pub fn sensors(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         ui.add_space(12.0);
         let fastest = s.clocks.mhz.iter().copied().fold(0.0_f32, f32::max);
         let slowest = s.clocks.mhz.iter().copied().fold(f32::MAX, f32::min);
-        let mut tiles: Vec<(String, String, Option<Color32>, Option<&str>)> = vec![
-            ("Average clock".into(), ghz(s.clocks.avg_mhz), Some(CPU_COL), None),
-            ("Fastest thread".into(), if fastest > 0.0 { ghz(fastest) } else { "Unavailable".into() }, None, None),
-            ("Slowest thread".into(), if slowest < f32::MAX { ghz(slowest) } else { "Unavailable".into() }, None, Some("Idle cores run slower or sleep to save power.")),
-            ("Base clock".into(), ghz(base), None, Some("The rated speed. Boost clocks above it are normal when the CPU is cool and has power to spare.")),
+        let mut tiles: Vec<(String, String, Option<Color32>)> = vec![
+            ("Average clock".into(), ghz(s.clocks.avg_mhz), Some(CPU_COL)),
+            ("Fastest thread".into(), if fastest > 0.0 { ghz(fastest) } else { "Unavailable".into() }, None),
+            ("Slowest thread".into(), if slowest < f32::MAX { ghz(slowest) } else { "Unavailable".into() }, None),
+            ("Base clock".into(), ghz(base), None),
         ];
         if s.zones.is_empty() {
-            tiles.push(("CPU temperature".into(), "Needs a driver".into(), None, Some(NO_CPU_TEMP)));
+            tiles.push(("CPU temperature".into(), "Needs a driver".into(), None));
         }
         for (name, c) in &s.zones {
             tiles.push((
                 format!("Thermal zone {name}"),
                 format!("{c:.0} °C"),
                 Some(temp_col(*c)),
-                Some("A motherboard temperature reported through ACPI. The PC maker decides what it measures; it is often near the CPU but is not the CPU's own sensor, and on some PCs it never changes."),
             ));
         }
-        tiles_tip(ui, w, &tiles);
+        tile_row(ui, w, &tiles);
         ui.add_space(GAP + 8.0);
 
         note_card(

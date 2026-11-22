@@ -19,7 +19,7 @@ not beat them.** What it adds is detail in one place, not better numbers.
 |---|---|---|---|
 | Per-process CPU | CPU time from Windows' scheduler | CPU cycles, counted at every context switch (Process Explorer's method) | Both within 2% of a known load, steady or bursty. A tie |
 | Total CPU number | `% Processor Utility` (scaled by boost clock) | `% Processor Time` (share of time busy), with Task Manager's figure shown next to it | 0.5 points from `% Processor Time` on average |
-| Per-process memory | Private memory only: misses memory the app shares | One "RAM" number that includes shared memory; hover for the split and for reserved memory | Caught 256 MB of shared memory that Task Manager showed as 0, matching the drop in available RAM. Private part exact |
+| Per-process memory | Private memory only: misses memory the app shares | One "RAM" number that includes shared memory; click the process for the split and reserved memory | Caught 256 MB of shared memory that Task Manager showed as 0, matching the drop in available RAM. Private part exact |
 | Per-process VRAM | Dedicated and shared GPU memory | Same counters, dedicated and shared kept apart, "—" when unavailable | Not tested (the bench stays off the GPU) |
 | Per-process disk | Includes cached and network I/O | Same as Task Manager; as administrator, physical disk I/O only, from a kernel trace | Standard user: 256 of 256 MB, same as Task Manager. Administrator mode not tested yet |
 | Per-process network | Not shown (Resource Monitor only) | As administrator: download and upload per program from the same kernel trace; open connections per program without admin | Not tested yet |

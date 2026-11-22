@@ -500,31 +500,55 @@ impl Painter {
                 self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
             }
 
-            let n = mesh.indices.len() as i32;
             if mesh.texture_id == egui::TextureId::default() && self.u_pass.is_some() {
-                // The font texture: text may be drawn per subpixel, which needs a separate amount
-                // of each colour channel, so it goes in two passes. For everything else in the
-                // font texture (grey text, shapes) the two passes add up to the usual blending.
-                unsafe {
-                    self.gl.uniform_1_f32(self.u_texel.as_ref(), 1.0 / self.font_width as f32);
-                    self.gl.uniform_1_i32(self.u_pass.as_ref(), 1);
-                    self.gl.blend_func_separate(glow::ZERO, glow::ONE_MINUS_SRC_COLOR, glow::ZERO, glow::ONE);
-                    self.gl.draw_elements(glow::TRIANGLES, n, glow::UNSIGNED_INT, 0);
-                    self.gl.uniform_1_i32(self.u_pass.as_ref(), 2);
-                    self.gl.blend_func_separate(glow::ONE, glow::ONE, glow::ONE_MINUS_DST_ALPHA, glow::ONE);
-                    self.gl.draw_elements(glow::TRIANGLES, n, glow::UNSIGNED_INT, 0);
-                    self.gl.uniform_1_i32(self.u_pass.as_ref(), 0);
-                    self.gl.blend_func_separate(glow::ONE, glow::ONE_MINUS_SRC_ALPHA, glow::ONE_MINUS_DST_ALPHA, glow::ONE);
-                }
+                self.paint_in_order(mesh);
             } else {
                 unsafe {
-                    self.gl.draw_elements(glow::TRIANGLES, n, glow::UNSIGNED_INT, 0);
+                    self.gl.draw_elements(glow::TRIANGLES, mesh.indices.len() as i32, glow::UNSIGNED_INT, 0);
                 }
             }
 
             check_for_gl_error!(&self.gl, "paint_mesh");
         } else {
             log::warn!("Failed to find texture {:?}", mesh.texture_id);
+        }
+    }
+
+    /// Draws a mesh that uses the font texture (text, and every plain shape), keeping its paint
+    /// order. Subpixel glyphs need two passes, which only give the usual "over" result while
+    /// nothing in between overlaps: across a whole mesh they would add covered layers together.
+    /// So only runs of such glyphs in one colour get the two passes; all else is drawn normally.
+    fn paint_in_order(&self, mesh: &Mesh) {
+        let (vertices, indices) = (&mesh.vertices, &mesh.indices);
+        // the colour of a subpixel glyph's triangle, or None for everything else
+        let glyph = |i: usize| {
+            let v = &vertices[indices[i] as usize];
+            (v.uv.x >= 2.0).then_some(v.color)
+        };
+        let mut start = 0;
+        while start < indices.len() {
+            let kind = glyph(start);
+            let mut end = start + 3;
+            while end < indices.len() && glyph(end) == kind {
+                end += 3;
+            }
+            let (n, at) = ((end - start) as i32, (start * 4) as i32);
+            unsafe {
+                if kind.is_some() {
+                    self.gl.uniform_1_f32(self.u_texel.as_ref(), 1.0 / self.font_width as f32);
+                    self.gl.uniform_1_i32(self.u_pass.as_ref(), 1);
+                    self.gl.blend_func_separate(glow::ZERO, glow::ONE_MINUS_SRC_COLOR, glow::ZERO, glow::ONE);
+                    self.gl.draw_elements(glow::TRIANGLES, n, glow::UNSIGNED_INT, at);
+                    self.gl.uniform_1_i32(self.u_pass.as_ref(), 2);
+                    self.gl.blend_func_separate(glow::ONE, glow::ONE, glow::ONE_MINUS_DST_ALPHA, glow::ONE);
+                    self.gl.draw_elements(glow::TRIANGLES, n, glow::UNSIGNED_INT, at);
+                    self.gl.uniform_1_i32(self.u_pass.as_ref(), 0);
+                    self.gl.blend_func_separate(glow::ONE, glow::ONE_MINUS_SRC_ALPHA, glow::ONE_MINUS_DST_ALPHA, glow::ONE);
+                } else {
+                    self.gl.draw_elements(glow::TRIANGLES, n, glow::UNSIGNED_INT, at);
+                }
+            }
+            start = end;
         }
     }
 

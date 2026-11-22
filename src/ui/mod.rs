@@ -39,43 +39,8 @@ pub enum Page {
 
 /// Space between the page content and the content panel's sides
 pub(super) const PAGE_PAD: f32 = 28.0;
-
-/// Called first thing inside a scrolling page: notes where its content starts, so the frame can
-/// tell how far it has scrolled (for the fade at the panel's top edge)
-pub(super) fn page_top(ui: &egui::Ui) {
-    let y = ui.max_rect().min.y;
-    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("page_top"), y));
-}
-
-/// The top of the panel fades the page out as it scrolls under, instead of a hard edge.
-/// Fully the panel's colour at the very top, clear `FADE` points lower, eased (smoothstep) so
-/// there is no visible line where it starts or ends. It comes in over the first few points of
-/// scrolling, so a page at rest is untouched.
-fn top_fade(p: &egui::Painter, content: Rect, scrolled: f32) {
-    const FADE: f32 = 40.0;
-    let k = (scrolled / 20.0).clamp(0.0, 1.0);
-    if k <= 0.0 {
-        return;
-    }
-    // clear of the rounded corner (the page never reaches it anyway)
-    let (x0, x1, y0) = (content.min.x + 14.0, content.max.x - 1.0, content.min.y);
-    let mut mesh = egui::Mesh::default();
-    const N: usize = 16;
-    for i in 0..=N {
-        let f = i as f32 / N as f32;
-        let a = 1.0 - f * f * (3.0 - 2.0 * f);
-        let c = bg().gamma_multiply(a * k);
-        let y = y0 + f * FADE;
-        mesh.colored_vertex(pos2(x0, y), c);
-        mesh.colored_vertex(pos2(x1, y), c);
-        if i > 0 {
-            let b = (i as u32) * 2;
-            mesh.add_triangle(b - 2, b - 1, b);
-            mesh.add_triangle(b - 1, b + 1, b);
-        }
-    }
-    p.add(mesh);
-}
+/// Space above a scrolling page's title. It is inside the scroll area, so it scrolls away.
+pub(super) const PAGE_TOP: f32 = 21.0;
 
 const NAV: [(Page, Icon, &str, bool); 9] = [
     (Page::Dashboard, Icon::Dashboard, "Dashboard", true),
@@ -298,14 +263,9 @@ impl App {
         let admin = self.snap.as_ref().is_some_and(|s| s.info.admin);
         let ay = rect.max.y - 26.0;
         p.circle_filled(pos2(rect.min.x + 27.0, ay), 3.5, if admin { GPU_COL } else { WARN_COL });
-        let (t, tip) = if admin {
-            ("Administrator", "Running elevated: every reading is available.")
-        } else {
-            ("Standard user", "Some readings (memory lists, protected processes, sensors) need Purgeon to run as administrator.")
-        };
+        let t = if admin { "Administrator" } else { "Standard user" };
         if admin {
-            let lr = p.text(pos2(rect.min.x + 37.0, ay), Align2::LEFT_CENTER, t, reg(11.5), txt_faint());
-            ui.interact(lr.expand(4.0), egui::Id::new("admin_tip"), Sense::hover()).on_hover_text(tip);
+            p.text(pos2(rect.min.x + 37.0, ay), Align2::LEFT_CENTER, t, reg(11.5), txt_faint());
         } else {
             // "Standard user · Elevate": restarts through the UAC prompt
             let br = Rect::from_min_max(pos2(rect.min.x + 16.0, ay - 12.0), pos2(rect.max.x - 16.0, ay + 12.0));
@@ -317,7 +277,6 @@ impl App {
             if resp.hovered() {
                 ctx.set_cursor_icon(CursorIcon::PointingHand);
             }
-            let resp = resp.on_hover_text("Restart Purgeon as administrator to unlock per-process physical disk activity, memory lists and protected processes.");
             if resp.clicked() {
                 // the elevated copy opens on the same page with the same table sort
                 let mut state = vec![format!("--page={}", page_name(self.page))];
@@ -464,13 +423,13 @@ impl eframe::App for App {
                 ctx.request_repaint();
             }
             // Scrolling pages run to the window's right edge (their scroll bar sits there) and keep
-            // the margin inside; the process table has its own scroll bar inside its card
-            let right = if self.page == Page::Processes { PAGE_PAD } else { 0.0 };
-            let inner = Rect::from_min_max(content.min + vec2(PAGE_PAD, 22.0 + 10.0 * (1.0 - t)), content.max - vec2(right, 0.0));
+            // the margins inside, so content slides right under the title bar; the process table
+            // has its own scroll bar inside its card
+            let (top, right) = if self.page == Page::Processes { (1.0 + PAGE_TOP, PAGE_PAD) } else { (1.0, 0.0) };
+            let inner = Rect::from_min_max(content.min + vec2(PAGE_PAD, top + 10.0 * (1.0 - t)), content.max - vec2(right, 0.0));
             let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(inner).id_salt(("page", self.page as u8)));
-            // pages scroll right up to the panel's top edge, under a soft fade (see `top_fade`)
+            // pages scroll right up to the panel's top edge and slide under the title bar
             let clip = Rect::from_min_max(pos2(content.min.x + 1.0, content.min.y + 1.0), content.max - vec2(1.0, 1.0));
-            ctx.data_mut(|d| d.remove::<f32>(egui::Id::new("page_top")));
             cui.set_clip_rect(clip.intersect(ui.clip_rect()));
             cui.multiply_opacity(t);
             match &self.snap {
@@ -501,9 +460,6 @@ impl eframe::App for App {
                         self.go(pg);
                     }
                 }
-            }
-            if let Some(y) = ctx.data(|d| d.get_temp::<f32>(egui::Id::new("page_top"))) {
-                top_fade(ui.painter(), content, inner.min.y - y);
             }
             if self.uac_note {
                 self.uac_note = uac_note(ctx, content);
@@ -643,7 +599,18 @@ fn setup_style(ctx: &egui::Context, reduced: bool) {
     st.spacing.item_spacing = vec2(8.0, 4.0);
     st.spacing.menu_margin = egui::Margin::same(6.0);
     st.spacing.window_margin = egui::Margin::same(12.0);
-    st.spacing.scroll = egui::style::ScrollStyle::thin();
+    st.spacing.scroll = egui::style::ScrollStyle {
+        // just the grey thumb, with no track behind it
+        dormant_background_opacity: 0.0,
+        active_background_opacity: 0.0,
+        interact_background_opacity: 0.0,
+        foreground_color: true,
+        dormant_handle_opacity: 0.35,
+        active_handle_opacity: 0.45,
+        interact_handle_opacity: 0.65,
+        floating_width: 4.0,
+        ..egui::style::ScrollStyle::thin()
+    };
     for (style, size) in [(egui::TextStyle::Body, 13.0), (egui::TextStyle::Button, 13.0), (egui::TextStyle::Small, 11.0), (egui::TextStyle::Heading, 20.0)] {
         st.text_styles.insert(style, egui::FontId::proportional(size));
     }
