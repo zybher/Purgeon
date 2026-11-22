@@ -1,0 +1,27 @@
+[package]
+name = "purgeon"
+version = "0.1.0"
+description = "Purgeon - a detailed Windows system monitor for CPU, RAM, VRAM and more"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "=0.29.1", default-features = false, features = ["glow", "default_fonts"] }
+
+[features]
+# Accuracy and overhead check: cargo run --release --features bench -- --bench [seconds]
+bench = []
+
+# egui's own text drawing, with one change: letters are drawn with the font's hinting
+# (snapped to the pixel grid the way Windows does), so small text is sharp, not soft
+[patch.crates-io]
+epaint = { path = "vendor/epaint" }
+# and egui's OpenGL painter, which draws that text per subpixel (ClearType-like) when it is on
+egui_glow = { path = "vendor/egui_glow" }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
