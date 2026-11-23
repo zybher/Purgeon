@@ -107,3 +107,19 @@ pub fn ago(secs: f32) -> String {
         format!("{:.0}m {:.0}s ago", (secs / 60.0).floor(), secs % 60.0)
     }
 }
+
+/// A length of time in words, to the two biggest units: "45 s", "12 min", "2 h 14 min", "3 days 4 h"
+pub fn span(secs: f64) -> String {
+    let s = secs.max(0.0) as u64;
+    let (d, h, m) = (s / 86400, s / 3600 % 24, s / 60 % 60);
+    if d > 0 {
+        let days = if d == 1 { "1 day".to_string() } else { format!("{d} days") };
+        if h > 0 { format!("{days} {h} h") } else { days }
+    } else if h > 0 {
+        if m > 0 { format!("{h} h {m} min") } else { format!("{h} h") }
+    } else if m > 0 {
+        format!("{m} min")
+    } else {
+        format!("{s} s")
+    }
+}

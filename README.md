@@ -94,9 +94,33 @@ window (tray and background apps) is ended. A few seconds later the card reports
 memory actually changed. Purgeon never closes anything on its own, and there's no "clean all
 memory" button: emptying every app's memory at once makes the PC slower, not faster.
 
+## What is this, and why is it busy?
+
+Click any program, in Processes, on the Dashboard, or in the "Who's using it" list at the top of
+the CPU, Memory, Disk, Network and GPU pages, and a panel slides in on the right with:
+
+- **What it is**, in plain words. For script runners it reads the command line, so `python.exe`
+  says "Python script: `C:\bots\scraper.py`". Chrome, Edge and Electron apps (Discord, VS Code,
+  Claude) name each process's job ("Tab or site", "Graphics helper", "Network service").
+  `svchost.exe` lists the Windows services each copy hosts, and `msedgewebview2.exe` names the app
+  it shows web pages for. Well-known Windows processes get a one-line description.
+- **Why it's busy**: a few sentences built from fixed rules and the measured numbers, such as
+  "Keeping one CPU thread fully busy", "Mostly writing to disk, 40 MB/s", "Using about 35% of
+  the GPU's video decode engine: playing or streaming video", or "Memory grew by 300 MB in the
+  last minute".
+- **Last minute** graphs of its CPU, memory, disk, GPU and network.
+- **Details** for a single process: when it started, who started it (with a link to the parent),
+  its file, publisher, version, priority and full command line. Open connections list the
+  addresses it talks to.
+- Buttons to open the file's location, search the web for it, change its priority, or end it.
+
+Processes always shows one row per program (chrome.exe ×30 is one row); its panel lists every
+process, and clicking one opens that process. Per-program GPU and network numbers are Windows'
+own estimates and are marked with ≈. A few protected Windows processes keep their command line
+and file private even from an administrator.
+
 ## Keyboard
 
-The Processes page keeps the list to four measures (CPU, memory, disk and GPU, each with a bar
-against the busiest app); click an app for everything else (location, memory split, video
-memory, threads, handles) in a panel on the right. Start typing to filter, arrow keys move the selection, Delete ends the
-selected process after a confirm, Esc clears the search or selection, Ctrl+F focuses search.
+On the Processes page, start typing to filter, arrow keys move between programs (the panel
+follows), Delete ends the selected program after a confirm, Esc clears the search or closes the
+panel, Ctrl+F focuses search.

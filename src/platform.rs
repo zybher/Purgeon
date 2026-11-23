@@ -383,3 +383,23 @@ pub fn subpixel_order() -> u8 {
     }
     if get(SPI_GETFONTSMOOTHINGORIENTATION) == 0 { 2 } else { 1 }
 }
+
+/// Opens File Explorer with this file selected
+pub fn open_location(path: &str) {
+    let (op, file, params) = (win::wide("open"), win::wide("explorer.exe"), win::wide(&format!("/select,\"{path}\"")));
+    unsafe { ShellExecuteW(0, op.as_ptr(), file.as_ptr(), params.as_ptr(), std::ptr::null(), 1) };
+}
+
+/// Searches the web for `query` in the default browser (only when the user clicks for it)
+pub fn search_online(query: &str) {
+    let q: String = query
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
+            b' ' => "+".into(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    let (op, url) = (win::wide("open"), win::wide(&format!("https://www.google.com/search?q={q}")));
+    unsafe { ShellExecuteW(0, op.as_ptr(), url.as_ptr(), std::ptr::null(), std::ptr::null(), 1) };
+}

@@ -6,6 +6,7 @@ mod anim;
 mod autostart;
 mod apps;
 mod boost;
+mod explain;
 mod fmt;
 mod platform;
 mod settings;

@@ -113,3 +113,22 @@ and write down anything that looks wrong.
 
 ## Sensors page
 - [ ] Scroll down: the CPU temperature tile reads "Needs a driver"
+
+## Details panel
+- [ ] Processes has no "Group by name" switch any more; every program is one row (chrome.exe ×30), and the second line says what it is ("91 processes · Windows service host")
+- [ ] Clicking a row opens the panel on the right and the list makes room for it; clicking the same row again, the X, or Esc closes it
+- [ ] Arrow keys move between programs and the panel follows
+- [ ] Run a Python script (`python some_script.py`): its panel says "Python script" and the full path. With several scripts running, the panel for python.exe lists each one, and clicking one opens it with its command line
+- [ ] svchost.exe: the panel lists its copies with the services each hosts; opening one shows "Services"
+- [ ] msedgewebview2.exe: the panel says which app it shows web content for (Teams, Widgets, Claude…)
+- [ ] chrome.exe / claude.exe: each process is named by its job (Tab or site, Graphics helper, Network service, Main process)
+- [ ] Start a busy loop in Python (`while True: pass`): the panel says "Keeping one CPU thread fully busy"
+- [ ] Copy a big file: the copying program's panel says it's mostly reading or writing (needs Elevate)
+- [ ] Play a YouTube video: the browser's panel mentions the GPU's video decode engine
+- [ ] "Last minute" graphs are already filled when the panel opens, and slide along each second
+- [ ] "Started by" reads right: an app you opened says you started it; a service says Windows; the parent link opens the parent
+- [ ] Open location shows the file selected in File Explorer; Search opens a web search; Priority changes stick (check Task Manager > Details)
+- [ ] End task on one process, and End all on a program with several, ask first and report what happened. End all on svchost.exe refuses with a note
+- [ ] CPU, Memory, Disk, Network and GPU pages start with a "Who's using it" list; clicking a program there opens the same panel
+- [ ] Dashboard's Top CPU / Top memory rows and the memory tiles open the panel too
+- [ ] Without Elevate: Disk's list shows "Who's moving data" and Network's shows "Who's connected"; the panel says to Elevate for disk and network

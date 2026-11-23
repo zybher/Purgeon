@@ -1,4 +1,5 @@
-//! The process table: sortable columns, search, grouping by name, heat-tinted cells.
+//! The process table: one row per program (its processes added together), sortable columns,
+//! search, heat-tinted cells. Clicking a row opens the details panel.
 
 use super::widgets::{self, Icon};
 use crate::anim::*;
@@ -54,6 +55,8 @@ fn ram_breakdown(r: &Row) -> String {
 #[derive(Clone)]
 struct Row {
     name: String,
+    /// Lower-case name: what the row and the details panel are keyed by
+    key: String,
     path: Option<std::sync::Arc<str>>,
     pid: Option<u32>,
     count: u32,
@@ -82,21 +85,15 @@ pub struct TableState {
     search: String,
     sort: Col,
     desc: bool,
-    group: bool,
-    selected: Option<(String, Option<u32>)>,
     rows: Vec<Row>,
-    key: Option<(usize, Col, bool, bool, String)>,
-    /// End task waiting for the user's confirmation: (name, pid)
-    confirm: Option<(String, u32)>,
-    /// Result of the last End task, shown for a few seconds
-    note: Option<(String, bool, Instant)>,
+    key: Option<(usize, Col, bool, String)>,
     scroll_y: f32,
     view_h: f32,
     scroll_to: Option<f32>,
     /// Where each row was before the user changed the sort, and when: rows slide from there
-    reorder: Option<(HashMap<(String, Option<u32>), usize>, Instant)>,
-    /// The row the details panel shows (kept while it slides away)
-    inspect: Option<Row>,
+    reorder: Option<(HashMap<String, usize>, Instant)>,
+    /// Delete was pressed on this row
+    end_key: Option<String>,
 }
 
 impl Default for TableState {
@@ -105,23 +102,19 @@ impl Default for TableState {
             search: String::new(),
             sort: Col::Cpu,
             desc: true,
-            group: false,
-            selected: None,
             rows: Vec::new(),
             key: None,
-            confirm: None,
-            note: None,
             scroll_y: 0.0,
             view_h: 400.0,
             scroll_to: None,
             reorder: None,
-            inspect: None,
+            end_key: None,
         }
     }
 }
 
 impl TableState {
-    /// Restores `--sort=cpu[:asc]` and `--group=on` (used when relaunching elevated)
+    /// Restores `--sort=cpu[:asc]` (used when relaunching elevated)
     pub fn from_args() -> Self {
         let mut t = TableState::default();
         for a in std::env::args() {
@@ -131,8 +124,6 @@ impl TableState {
                     t.sort = *c;
                     t.desc = !asc;
                 }
-            } else if let Some(v) = a.strip_prefix("--group=") {
-                t.group = v == "on";
             }
         }
         t
@@ -141,83 +132,62 @@ impl TableState {
     /// The arguments `from_args` reads back
     pub fn state_args(&self) -> Vec<String> {
         let name = COL_NAMES.iter().find(|(c, _)| *c == self.sort).map_or("cpu", |(_, n)| *n);
-        vec![
-            format!("--sort={name}{}", if self.desc { "" } else { ":asc" }),
-            format!("--group={}", if self.group { "on" } else { "off" }),
-        ]
+        vec![format!("--sort={name}{}", if self.desc { "" } else { ":asc" })]
     }
 
     fn rebuild(&mut self, s: &Snapshot) {
-        let key = (s.seq as usize, self.sort, self.desc, self.group, self.search.clone());
+        let key = (s.seq as usize, self.sort, self.desc, self.search.clone());
         if self.key.as_ref() == Some(&key) {
             return;
         }
         // A new sort order (not a data update or a search) animates rows to their new places
-        let resorted = self.key.as_ref().is_some_and(|k| (k.1, k.2, k.3) != (key.1, key.2, key.3) && k.4 == key.4);
-        if resorted && !reduced() && self.group == self.key.as_ref().map_or(self.group, |k| k.3) {
-            let old = self.rows.iter().enumerate().map(|(i, r)| ((r.name.clone(), r.pid), i)).collect();
+        let resorted = self.key.as_ref().is_some_and(|k| (k.1, k.2) != (key.1, key.2) && k.3 == key.3);
+        if resorted && !reduced() {
+            let old = self.rows.iter().enumerate().map(|(i, r)| (r.key.clone(), i)).collect();
             self.reorder = Some((old, Instant::now()));
         }
         self.key = Some(key);
         let q = self.search.trim().to_lowercase();
         let hit = |name: &str, pid: u32| q.is_empty() || name.to_lowercase().contains(&q) || pid.to_string() == q;
-        let mut rows: Vec<Row> = if self.group {
-            let mut m: HashMap<String, Row> = HashMap::new();
-            for p in s.procs.iter().filter(|p| hit(&p.name, p.pid)) {
-                let r = m.entry(p.name.to_lowercase()).or_insert_with(|| Row {
-                    name: p.name.clone(),
-                    path: None,
-                    pid: None,
-                    count: 0,
-                    cpu: 0.0,
-                    private_ws: 0,
-                    shared: 0,
-                    commit: 0,
-                    io: 0.0,
-                    disk: 0.0,
-                    gpu: 0.0,
-                    vram: 0,
-                    threads: 0,
-                    handles: 0,
-                });
-                r.count += 1;
-                if r.path.is_none() {
-                    r.path = p.path.clone();
-                }
-                r.cpu += p.cpu;
-                r.private_ws += p.private_ws;
-                r.shared = r.shared.max(p.shared());
-                r.commit += p.commit;
-                r.io += p.io_read + p.io_write;
-                r.disk += p.disk_read + p.disk_write;
-                r.gpu += p.gpu;
-                r.vram += p.vram;
-                r.threads += p.threads;
-                r.handles += p.handles;
+        // a program's processes always form one row; searching a PID finds its program
+        let mut m: HashMap<String, Row> = HashMap::new();
+        for p in s.procs.iter().filter(|p| hit(&p.name, p.pid)) {
+            let r = m.entry(p.name.to_lowercase()).or_insert_with(|| Row {
+                name: p.name.clone(),
+                key: p.name.to_lowercase(),
+                path: None,
+                pid: Some(p.pid),
+                count: 0,
+                cpu: 0.0,
+                private_ws: 0,
+                shared: 0,
+                commit: 0,
+                io: 0.0,
+                disk: 0.0,
+                gpu: 0.0,
+                vram: 0,
+                threads: 0,
+                handles: 0,
+            });
+            r.count += 1;
+            if r.count > 1 {
+                r.pid = None;
             }
-            m.into_values().collect()
-        } else {
-            s.procs
-                .iter()
-                .filter(|p| hit(&p.name, p.pid))
-                .map(|p| Row {
-                    name: p.name.clone(),
-                    path: p.path.clone(),
-                    pid: Some(p.pid),
-                    count: 1,
-                    cpu: p.cpu,
-                    private_ws: p.private_ws,
-                    shared: p.shared(),
-                    commit: p.commit,
-                    io: p.io_read + p.io_write,
-                    disk: p.disk_read + p.disk_write,
-                    gpu: p.gpu,
-                    vram: p.vram,
-                    threads: p.threads,
-                    handles: p.handles,
-                })
-                .collect()
-        };
+            if r.path.is_none() {
+                r.path = p.path.clone();
+            }
+            r.cpu += p.cpu;
+            r.private_ws += p.private_ws;
+            r.shared = r.shared.max(p.shared());
+            r.commit += p.commit;
+            r.io += p.io_read + p.io_write;
+            r.disk += p.disk_read + p.disk_write;
+            r.gpu += p.gpu;
+            r.vram += p.vram;
+            r.threads += p.threads;
+            r.handles += p.handles;
+        }
+        let mut rows: Vec<Row> = m.into_values().collect();
         let sort = self.sort;
         rows.sort_by(|a, b| {
             use std::cmp::Ordering;
@@ -234,7 +204,7 @@ impl TableState {
                 Col::Handles => a.handles.cmp(&b.handles),
             };
             // stable tie-break by name so equal rows don't shuffle every update
-            let o = if o == Ordering::Equal { b.name.cmp(&a.name).then(b.pid.cmp(&a.pid)) } else { o };
+            let o = if o == Ordering::Equal { b.key.cmp(&a.key) } else { o };
             o.reverse()
         });
         if !self.desc {
@@ -243,11 +213,12 @@ impl TableState {
         self.rows = rows;
     }
 
-    pub fn show(&mut self, ui: &mut Ui, s: &Snapshot) {
+    /// `room`: width the details panel takes on the right while it is open
+    pub fn show(&mut self, ui: &mut Ui, s: &Snapshot, room: f32) {
         let ctx = ui.ctx().clone();
         let w = ui.available_width();
 
-        // Header row: title, counts, search, grouping
+        // Header row: title, counts, search
         let (hr, _) = ui.allocate_exact_size(vec2(w, 66.0), Sense::hover());
         let p = ui.painter().clone();
         p.text(pos2(hr.min.x, hr.min.y + 14.0), Align2::LEFT_CENTER, "Processes", sb(24.0), txt());
@@ -259,11 +230,7 @@ impl TableState {
         );
         p.text(pos2(hr.min.x, hr.min.y + 40.0), Align2::LEFT_CENTER, sub, reg(12.5), txt_faint());
 
-        let sw = Rect::from_min_size(pos2(hr.max.x - 36.0, hr.min.y + 9.0), vec2(36.0, 21.0));
-        widgets::switch(ui, sw, &mut self.group);
-        p.text(pos2(sw.min.x - 10.0, sw.center().y), Align2::RIGHT_CENTER, "Group by name", reg(12.5), txt_dim());
-
-        let sr = Rect::from_min_size(pos2(sw.min.x - 128.0 - 260.0, hr.min.y + 4.0), vec2(260.0, 31.0));
+        let sr = Rect::from_min_size(pos2(hr.max.x - 260.0, hr.min.y + 4.0), vec2(260.0, 31.0));
         let focus_id = egui::Id::new("proc_search");
         let focused = ctx.memory(|m| m.has_focus(focus_id));
         let fk = ease(&ctx, focus_id.with("fk"), focused);
@@ -297,13 +264,15 @@ impl TableState {
 
         self.rebuild(s);
         // dev captures can start with the top row open in the details panel: PURGEON_PROC_SELECT=1
-        if self.selected.is_none() && !self.rows.is_empty() && std::env::var_os("PURGEON_PROC_SELECT").is_some() && !ctx.data(|d| d.get_temp::<bool>(egui::Id::new("proc_test_sel")).unwrap_or(false)) {
+        if !self.rows.is_empty() && std::env::var_os("PURGEON_PROC_SELECT").is_some() && !ctx.data(|d| d.get_temp::<bool>(egui::Id::new("proc_test_sel")).unwrap_or(false)) {
             ctx.data_mut(|d| d.insert_temp(egui::Id::new("proc_test_sel"), true));
-            self.selected = Some((self.rows[0].name.clone(), self.rows[0].pid));
+            super::detail::open_group(&ctx, &self.rows[0].key);
         }
+        let selected = super::detail::shown_group(&ctx);
         let pitch = ROW_H + ui.spacing().item_spacing.y;
-        if self.confirm.is_none() {
-            self.keyboard(&ctx, focus_id, pitch);
+        self.keyboard(&ctx, focus_id, pitch, selected.as_deref());
+        if let Some(k) = self.end_key.take() {
+            super::detail::ask_end(&ctx, s, &k);
         }
 
         // The table card fills the rest
@@ -313,17 +282,8 @@ impl TableState {
         widgets::card(&p, card, crate::theme::card());
         let inner = card.shrink2(vec2(8.0, 0.0));
 
-        // The list on the left, and, while a row is selected, its details on the right
-        let sel_row = self.selected.as_ref().and_then(|(n, pid)| self.rows.iter().find(|r| r.name == *n && r.pid == *pid)).cloned();
-        if sel_row.is_some() {
-            self.inspect = sel_row.clone();
-        }
-        let ik = ease(&ctx, egui::Id::new("proc_inspect"), sel_row.is_some());
-        if ik < 0.01 {
-            self.inspect = None;
-        }
-        let insp_w = (inner.width() * 0.34).clamp(250.0, 320.0) * ik;
-        let list = Rect::from_min_max(inner.min, pos2(inner.max.x - insp_w, inner.max.y));
+        // The list, leaving room on the right while the details panel is open
+        let list = Rect::from_min_max(inner.min, pos2((inner.max.x - room).max(inner.min.x + 240.0), inner.max.y));
 
         // Four measures, the ones people sort by; the rest lives in the details
         let disk_col = if s.disk_trace {
@@ -398,10 +358,8 @@ impl TableState {
             _ => None,
         };
         let view_h = self.view_h;
-        let mut clicked: Option<(String, Option<u32>)> = None;
-        let mut end_req: Option<(String, Option<u32>)> = None;
-        let group = self.group;
-        let selected = self.selected.clone();
+        let mut clicked: Option<String> = None;
+        let mut end_req: Option<String> = None;
         let gpu_ok = s.gpu_proc;
         let sort = self.sort;
         let mut sa = ScrollArea::vertical().auto_shrink(false);
@@ -416,14 +374,17 @@ impl TableState {
                 // slide from where the row was before the sort; rows from far away start just off screen
                 if let Some((old, k)) = &reorder {
                     let new_i = (first + j) as f32;
-                    let from = old.get(&(row.name.clone(), row.pid)).map_or(new_i + 3.0, |&i| i as f32);
+                    let from = old.get(&row.key).map_or(new_i + 3.0, |&i| i as f32);
                     let off = ((from - new_i) * pitch).clamp(-view_h - ROW_H, view_h + ROW_H) * (1.0 - k);
                     r = r.translate(vec2(0.0, off));
                 }
                 let p = ui.painter();
-                let id = egui::Id::new(("row", &row.name, row.pid));
+                let id = egui::Id::new(("row", &row.key));
                 let h = ease(&ctx, id, resp.hovered());
-                let is_sel = selected.as_ref().is_some_and(|(n, pid)| *n == row.name && *pid == row.pid);
+                if resp.hovered() {
+                    ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                let is_sel = selected.as_deref() == Some(row.key.as_str());
                 let selk = ease(&ctx, id.with("sel"), is_sel);
                 let fill = mix(wa((h * 8.0) as u8), ACCENT.gamma_multiply(0.16), selk);
                 p.rect_filled(r.shrink2(vec2(0.0, 2.0)), 9.0, fill);
@@ -434,15 +395,17 @@ impl TableState {
                 let maxw = name_w - 64.0;
                 let name = clip(p, &row.name, maxw);
                 p.text(pos2(r.min.x + 44.0, cy - 7.5), Align2::LEFT_CENTER, name, reg(13.0), mix(txt(), hi(), selk));
-                let sub = if group && row.count > 1 {
-                    format!("{} processes", row.count)
-                } else {
-                    match row.pid {
-                        Some(pid) => format!("PID {pid}"),
-                        None => "1 process".into(),
-                    }
+                // what it is, in a few words, next to how many processes it has
+                let what = crate::explain::about(&row.name).map(|a| a.0.to_string()).or_else(|| row.path.as_deref().and_then(|p| crate::sys::procinfo::file_info(p).description));
+                let count = match row.pid {
+                    Some(pid) => format!("PID {pid}"),
+                    None => format!("{} processes", row.count),
                 };
-                p.text(pos2(r.min.x + 44.0, cy + 8.5), Align2::LEFT_CENTER, sub, reg(11.0), txt_faint());
+                let sub = match what {
+                    Some(w) if !w.eq_ignore_ascii_case(row.name.trim_end_matches(".exe")) => format!("{count}  ·  {w}"),
+                    _ => count,
+                };
+                widgets::fit(p, pos2(r.min.x + 44.0, cy + 8.5), Align2::LEFT_CENTER, &sub, reg(11.0), maxw, txt_faint());
 
                 for (i, c) in cols.iter().enumerate() {
                     let cell = Rect::from_min_max(pos2(xs[i] - col_w, r.min.y), pos2(xs[i], r.max.y));
@@ -465,10 +428,14 @@ impl TableState {
                 }
 
                 if resp.clicked() {
-                    clicked = Some((row.name.clone(), row.pid));
+                    clicked = Some(row.key.clone());
                 }
-                let (nm, pid) = (row.name.clone(), row.pid);
+                let (nm, key, pid, n) = (row.name.clone(), row.key.clone(), row.pid, row.count);
                 resp.context_menu(|ui| {
+                    if ui.button("Details").clicked() {
+                        clicked = Some(key.clone());
+                        ui.close_menu();
+                    }
                     if ui.button("Copy name").clicked() {
                         ui.output_mut(|o| o.copied_text = nm.clone());
                         ui.close_menu();
@@ -480,27 +447,24 @@ impl TableState {
                         }
                     }
                     ui.separator();
-                    if ui.button("End task…").clicked() {
-                        end_req = Some((nm.clone(), pid));
+                    if ui.button(if n > 1 { "End all…" } else { "End task…" }).clicked() {
+                        end_req = Some(key.clone());
                         ui.close_menu();
                     }
                 });
             }
         });
-        if let Some(row) = self.inspect.clone() {
-            let ir = Rect::from_min_max(pos2(list.max.x, card.min.y), card.max);
-            if let Some(end) = self.inspector(ui, &p, ir, ik, &row, s) {
-                end_req = Some(end);
-            }
-        }
         self.scroll_y = out.state.offset.y;
         self.view_h = out.inner_rect.height();
         if let Some(c) = clicked {
-            self.selected = if self.selected.as_ref() == Some(&c) { None } else { Some(c) };
+            if selected.as_deref() == Some(c.as_str()) {
+                super::detail::close(&ctx);
+            } else {
+                super::detail::open_group(&ctx, &c);
+            }
         }
-        if let Some((name, pid)) = end_req {
-            self.selected = Some((name.clone(), pid));
-            self.ask_end(name, pid);
+        if let Some(key) = end_req {
+            super::detail::ask_end(&ctx, s, &key);
         }
 
         // Empty states
@@ -514,27 +478,11 @@ impl TableState {
             p.text(body.center() + vec2(0.0, 12.0), Align2::CENTER_CENTER, sub, reg(12.0), txt_faint());
         }
 
-        // Result of the last End task
-        if let Some((msg, ok, at)) = &self.note {
-            let age = at.elapsed().as_secs_f32();
-            if age < 5.0 {
-                let r = Rect::from_center_size(pos2(card.center().x, card.max.y - 26.0), vec2((card.width() - 40.0).min(520.0), 34.0));
-                p.rect_filled(r, 10.0, Color32::from_gray(0x2a));
-                p.rect_stroke(r, 10.0, Stroke::new(1.0_f32, border()));
-                p.circle_filled(pos2(r.min.x + 16.0, r.center().y), 3.5, if *ok { GPU_COL } else { DANGER });
-                widgets::fit(&p, pos2(r.min.x + 28.0, r.center().y), Align2::LEFT_CENTER, msg, reg(12.5), r.width() - 40.0, txt());
-                ctx.request_repaint_after(std::time::Duration::from_secs_f32(5.0 - age));
-            } else {
-                self.note = None;
-            }
-        }
-
-        self.confirm_dialog(&ctx);
     }
 
     /// Arrow keys move the selection, Delete ends it (after a confirm), typing filters,
     /// Esc clears the selection or the search
-    fn keyboard(&mut self, ctx: &egui::Context, focus_id: egui::Id, pitch: f32) {
+    fn keyboard(&mut self, ctx: &egui::Context, focus_id: egui::Id, pitch: f32, selected: Option<&str>) {
         use egui::{Event, Key};
         let search_focused = ctx.memory(|m| m.has_focus(focus_id));
         let other_focused = ctx.memory(|m| m.focused().is_some_and(|f| f != focus_id));
@@ -576,13 +524,13 @@ impl TableState {
             if !self.search.is_empty() {
                 self.search.clear();
             } else {
-                self.selected = None;
+                super::detail::close(ctx);
             }
             ctx.memory_mut(|m| m.surrender_focus(focus_id));
         }
         let n = self.rows.len();
         if n > 0 && (up || down || home || end) {
-            let cur = self.selected.as_ref().and_then(|(nm, pid)| self.rows.iter().position(|r| r.name == *nm && r.pid == *pid));
+            let cur = selected.and_then(|k| self.rows.iter().position(|r| r.key == k));
             let i = match (cur, up, down, home) {
                 (_, _, _, true) => 0,
                 _ if end => n - 1,
@@ -591,8 +539,7 @@ impl TableState {
                 (Some(c), _, true, _) => (c + 1).min(n - 1),
                 (Some(c), _, _, _) => c,
             };
-            let r = &self.rows[i];
-            self.selected = Some((r.name.clone(), r.pid));
+            super::detail::open_group(ctx, &self.rows[i].key);
             // keep the selected row in view
             let top = i as f32 * pitch;
             if top < self.scroll_y {
@@ -602,142 +549,10 @@ impl TableState {
             }
         }
         if del {
-            if let Some((name, pid)) = self.selected.clone() {
-                self.ask_end(name, pid);
+            if let Some(k) = selected {
+                self.end_key = Some(k.to_string());
             }
         }
-    }
-
-    fn ask_end(&mut self, name: String, pid: Option<u32>) {
-        match pid {
-            Some(pid) => self.confirm = Some((name, pid)),
-            None => self.note = Some(("Turn off Group by name to end one process at a time.".into(), false, Instant::now())),
-        }
-    }
-
-    /// "End chrome.exe?" with Cancel and End task. Enter confirms, Esc cancels.
-    fn confirm_dialog(&mut self, ctx: &egui::Context) {
-        let Some((name, pid)) = self.confirm.clone() else { return };
-        let blocked = crate::platform::end_blocked(pid, &name);
-        let (mut go, mut cancel) = ctx.input(|i| (i.key_pressed(egui::Key::Enter) && blocked.is_none(), i.key_pressed(egui::Key::Escape)));
-        // dim everything behind the dialog
-        let screen = ctx.screen_rect();
-        ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("end_dim"))).rect_filled(screen, 0.0, Color32::from_black_alpha(110));
-        egui::Window::new("end_task")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .fixed_size([380.0, 0.0])
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(format!("End {name}?")).font(sb(16.0)).color(hi()));
-                ui.add_space(2.0);
-                ui.label(egui::RichText::new(format!("PID {pid}")).font(reg(12.0)).color(txt_faint()));
-                ui.add_space(8.0);
-                let body = blocked.unwrap_or("The program closes immediately. Anything unsaved in it is lost.");
-                ui.label(egui::RichText::new(body).font(reg(12.5)).color(txt_dim()));
-                ui.add_space(14.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if blocked.is_none() {
-                        let b = egui::Button::new(egui::RichText::new("End task").font(sb(12.5)).color(Color32::WHITE)).fill(DANGER).min_size(vec2(92.0, 30.0));
-                        if ui.add(b).clicked() {
-                            go = true;
-                        }
-                    }
-                    let label = if blocked.is_some() { "OK" } else { "Cancel" };
-                    if ui.add(egui::Button::new(egui::RichText::new(label).font(sb(12.5))).min_size(vec2(80.0, 30.0))).clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-        if go {
-            self.confirm = None;
-            self.note = Some(match crate::platform::end_process(pid, &name) {
-                Ok(()) => (format!("Ended {name} (PID {pid})."), true, Instant::now()),
-                Err(e) => (format!("Couldn't end {name}: {e}"), false, Instant::now()),
-            });
-            self.key = None;
-        } else if cancel {
-            self.confirm = None;
-        }
-    }
-
-    /// The details of the selected row, sliding in from the card's right side
-    fn inspector(&mut self, ui: &mut Ui, p: &egui::Painter, r: Rect, k: f32, row: &Row, s: &Snapshot) -> Option<(String, Option<u32>)> {
-        let ctx = ui.ctx().clone();
-        let p = p.with_clip_rect(r.intersect(ui.clip_rect()));
-        let a = k * k;
-        let col = |c: Color32| c.gamma_multiply(a);
-        p.line_segment([pos2(r.min.x, r.min.y + 14.0), pos2(r.min.x, r.max.y - 14.0)], Stroke::new(1.0_f32, col(border())));
-        let x0 = r.min.x + 22.0 + (1.0 - k) * 30.0;
-        let x1 = x0 + r.width().max(250.0) - 44.0;
-        let w = x1 - x0;
-        let mut y = r.min.y + 22.0;
-
-        super::icons::paint(&ctx, &p, Rect::from_min_size(pos2(x0, y), vec2(32.0, 32.0)), &row.name, row.path.as_ref());
-        widgets::fit(&p, pos2(x0 + 44.0, y + 8.0), Align2::LEFT_CENTER, &row.name, sb(15.0), w - 76.0, col(hi()));
-        let who = if self.group && row.count > 1 { format!("{} processes", row.count) } else { row.pid.map_or("1 process".into(), |p| format!("PID {p}")) };
-        p.text(pos2(x0 + 44.0, y + 26.0), Align2::LEFT_CENTER, who, reg(11.5), col(txt_faint()));
-        // close
-        let cr = Rect::from_center_size(pos2(x1 - 8.0, y + 10.0), vec2(22.0, 22.0));
-        let resp = ui.interact(cr, egui::Id::new("inspect_close"), Sense::click());
-        let (h, _) = hover_fx(&ctx, &resp);
-        p.circle_filled(cr.center(), 11.0, col(wa((h * 22.0) as u8)));
-        let c = cr.center();
-        let st = Stroke::new(1.3_f32, col(mix(txt_dim(), hi(), h)));
-        p.line_segment([c + vec2(-3.5, -3.5), c + vec2(3.5, 3.5)], st);
-        p.line_segment([c + vec2(3.5, -3.5), c + vec2(-3.5, 3.5)], st);
-        if resp.clicked() {
-            self.selected = None;
-        }
-        y += 50.0;
-
-        let path = row.path.as_deref().unwrap_or("Windows keeps this program's location private");
-        let lines = p.layout(path.to_string(), reg(11.0), col(txt_dim()), w);
-        let ph = lines.size().y.min(44.0);
-        p.with_clip_rect(Rect::from_min_size(pos2(x0, y), vec2(w, ph)).intersect(p.clip_rect())).galley(pos2(x0, y), lines, col(txt_dim()));
-        y += ph + 18.0;
-
-        let gpu_ok = s.gpu_proc;
-        let stat = |label: &str, value: String, y: &mut f32, strong: bool| {
-            p.text(pos2(x0, *y), Align2::LEFT_CENTER, label, reg(12.0), col(txt_faint()));
-            p.text(pos2(x1, *y), Align2::RIGHT_CENTER, value, reg(12.5), col(if strong { hi() } else { txt() }));
-            *y += 25.0;
-        };
-        let section = |t: &str, y: &mut f32| {
-            p.text(pos2(x0, *y), Align2::LEFT_CENTER, t, sb(10.5), col(txt_faint()));
-            *y += 22.0;
-        };
-        section("ACTIVITY", &mut y);
-        stat("CPU", fmt::pct(row.cpu), &mut y, true);
-        stat("GPU", if gpu_ok { fmt::pct(row.gpu) } else { "—".into() }, &mut y, false);
-        if s.disk_trace {
-            stat("Disk", fmt::rate(row.disk), &mut y, false);
-        }
-        stat("All I/O", fmt::rate(row.io), &mut y, false);
-        y += 8.0;
-        section("MEMORY", &mut y);
-        stat("In RAM", fmt::bytes(row.ram()), &mut y, true);
-        stat("Only this app", fmt::bytes(row.private_ws), &mut y, false);
-        stat("Shared", fmt::bytes(row.shared), &mut y, false);
-        stat("Reserved", fmt::bytes(row.commit), &mut y, false);
-        stat("Video memory", if gpu_ok { fmt::bytes(row.vram) } else { "—".into() }, &mut y, false);
-        y += 8.0;
-        section("INSIDE", &mut y);
-        stat("Threads", fmt::thousands(row.threads as u64), &mut y, false);
-        stat("Handles", fmt::thousands(row.handles as u64), &mut y, false);
-
-        // End task, at the foot of the panel
-        let top = (r.max.y - 56.0).max(y + 6.0);
-        let br = Rect::from_min_max(pos2(x0, top), pos2(x1, top + 34.0));
-        let resp = ui.interact(br, egui::Id::new("inspect_end"), Sense::click());
-        let (h, _) = hover_fx(&ctx, &resp);
-        p.rect_filled(br, 9.0, col(DANGER.gamma_multiply(0.10 + 0.16 * h)));
-        p.rect_stroke(br, 9.0, Stroke::new(1.0_f32, col(DANGER.gamma_multiply(0.45 + 0.3 * h))));
-        p.text(br.center(), Align2::CENTER_CENTER, "End task…", sb(12.5), col(mix(txt(), hi(), h)));
-        (resp.clicked() && k > 0.9).then(|| (row.name.clone(), row.pid))
     }
 }
 

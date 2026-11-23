@@ -65,6 +65,10 @@ struct Group {
     mem: u64,
     shared: u64,
     vram: u64,
+    /// GPU use, 0..100 (Windows' estimate)
+    gpu: f32,
+    /// All I/O (disk, network, devices) per second: known without administrator
+    io: f64,
     disk_r: f64,
     disk_w: f64,
     net_rx: f64,
@@ -84,6 +88,8 @@ fn grouped(s: &Snapshot) -> Vec<Group> {
             mem: 0,
             shared: 0,
             vram: 0,
+            gpu: 0.0,
+            io: 0.0,
             disk_r: 0.0,
             disk_w: 0.0,
             net_rx: 0.0,
@@ -98,6 +104,8 @@ fn grouped(s: &Snapshot) -> Vec<Group> {
         g.mem += p.private_ws;
         g.shared = g.shared.max(p.shared());
         g.vram += p.vram;
+        g.gpu = (g.gpu + p.gpu).min(100.0);
+        g.io += p.io_read + p.io_write;
         g.disk_r += p.disk_read;
         g.disk_w += p.disk_write;
         g.net_rx += p.net_rx;
@@ -130,8 +138,15 @@ fn top_list_w(ui: &mut Ui, r: Rect, title: &str, col: Color32, rows: &[(&Group, 
         if rr.max.y > r.max.y - 6.0 {
             break;
         }
-        let resp = ui.interact(rr, ui.id().with((title, i)), Sense::hover());
+        // a click opens the program's details
+        let resp = ui.interact(rr, ui.id().with((title, i)), Sense::click());
         let h = ease(ui.ctx(), resp.id.with("h"), resp.hovered());
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            super::detail::open_group(ui.ctx(), &g.name);
+        }
         p.rect_filled(rr, 7.0, wa((h * 9.0) as u8));
         super::icons::paint(ui.ctx(), &p, Rect::from_center_size(pos2(rr.min.x + 20.0, rr.center().y), vec2(18.0, 18.0)), &g.name, g.path.as_ref());
         p.text(pos2(rr.max.x - 10.0, rr.center().y), Align2::RIGHT_CENTER, txtv, sb(12.5), txt());
@@ -146,6 +161,24 @@ fn top_list_w(ui: &mut Ui, r: Rect, title: &str, col: Color32, rows: &[(&Group, 
         }
         widgets::meter(&p, br, glide(ui.ctx(), resp.id.with("bar"), v / max, 10.0), col);
     }
+}
+
+/// "Who's using it": the programs using the most of a page's resource, at the top of the page.
+/// Click one for its details.
+#[allow(clippy::too_many_arguments)]
+fn who_card(ui: &mut Ui, w: f32, title: &str, col: Color32, note: &str, rows: &[(&Group, f32, String)], value_w: f32, empty: &str) {
+    let rows = &rows[..rows.len().min(6)];
+    let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
+    top_list_w(ui, r, title, col, rows, value_w);
+    let p = ui.painter();
+    if !note.is_empty() {
+        let tw = p.layout_no_wrap(title.to_string(), sb(12.5), txt()).size().x;
+        widgets::fit(p, pos2(r.max.x - 18.0, r.min.y + 24.0), Align2::RIGHT_CENTER, note, reg(11.0), r.width() - tw - 80.0, txt_faint());
+    }
+    if rows.is_empty() {
+        p.text(pos2(r.min.x + 18.0, r.min.y + 60.0), Align2::LEFT_CENTER, empty, reg(12.5), txt_faint());
+    }
+    ui.add_space(GAP);
 }
 
 /// "Your PC has plenty of headroom", then up to five programs in plain words
@@ -196,7 +229,13 @@ fn summary(ui: &mut Ui, s: &Snapshot, w: f32) {
         widgets::fit(&p, pos2(vr.max.x + 6.0, t.min.y + 47.5), Align2::LEFT_CENTER, &of, reg(11.0), t.max.x - 10.0 - (vr.max.x + 6.0), txt_faint());
         widgets::meter(&p, Rect::from_min_size(pos2(t.min.x + 12.0, t.min.y + 63.0), vec2(tw - 24.0, 3.0)), share.clamp(0.0, 1.0), MEM_COL);
         let procs = if g.count > 1 { format!("{} processes", g.count) } else { "1 process".into() };
-        ui.interact(t, egui::Id::new(("top_app", i)), Sense::hover()).on_hover_text(format!("{}  ·  {procs}", g.name));
+        let resp = ui.interact(t, egui::Id::new(("top_app", i)), Sense::click()).on_hover_text(format!("{}  ·  {procs}", g.name));
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            super::detail::open_group(ui.ctx(), &g.name);
+        }
     }
 }
 
@@ -223,6 +262,11 @@ fn chevron(p: &Painter, c: egui::Pos2, open: f32, col: Color32) {
     let s = Stroke::new(1.6_f32, col);
     p.line_segment([rot(-2.5, -4.5), rot(2.0, 0.0)], s);
     p.line_segment([rot(2.0, 0.0), rot(-2.5, 4.5)], s);
+}
+
+/// A small chevron pointing right: "opens more"
+pub(super) fn chevron_right(p: &Painter, c: egui::Pos2, col: Color32) {
+    chevron(p, c, 0.0, col);
 }
 
 pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
@@ -508,6 +552,14 @@ pub fn cpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let ctx = ui.ctx().clone();
         header(ui, "CPU", &s.info.cpu_name);
 
+        // who's using it, before the graphs
+        let groups = grouped(s);
+        let mut by: Vec<&Group> = groups.iter().filter(|g| g.cpu >= 0.05).collect();
+        by.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
+        let threads = s.info.logical.max(1) as f32;
+        let rows: Vec<(&Group, f32, String)> = by.iter().map(|g| (*g, g.cpu, format!("{}  ·  {:.1} threads", fmt::pct(g.cpu), g.cpu / 100.0 * threads))).collect();
+        who_card(ui, w, "Who's using the CPU", CPU_COL, "Click a program to see what it's doing", &rows, 170.0, "Nothing is using the CPU right now");
+
         let (r, _) = ui.allocate_exact_size(vec2(w, 300.0), Sense::hover());
         let p = ui.painter().clone();
         widgets::card(&p, r, card());
@@ -579,6 +631,13 @@ pub fn memory(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let ctx = ui.ctx().clone();
         let m = &s.mem;
         header(ui, "Memory", &format!("{} installed  ·  {} committed of {}", fmt::bytes(m.total), fmt::bytes(m.commit), fmt::bytes(m.commit_limit)));
+
+        let groups = grouped(s);
+        let mut by_mem: Vec<&Group> = groups.iter().collect();
+        by_mem.sort_by(|a, b| b.mem.cmp(&a.mem));
+        let total = m.total.max(1) as f32;
+        let rows: Vec<(&Group, f32, String)> = by_mem.iter().map(|g| (*g, g.mem as f32, format!("{}  ·  {:.0}%", fmt::bytes(g.mem), g.mem as f32 / total * 100.0))).collect();
+        who_card(ui, w, "Who's using memory", MEM_COL, "Click a program to see what it's doing", &rows, 150.0, "");
 
         let (r, _) = ui.allocate_exact_size(vec2(w, 280.0), Sense::hover());
         let p = ui.painter().clone();
@@ -663,13 +722,6 @@ pub fn memory(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         }
 
         ui.add_space(GAP);
-        let groups = grouped(s);
-        let mut by_mem: Vec<&Group> = groups.iter().collect();
-        by_mem.sort_by(|a, b| b.mem.cmp(&a.mem));
-        let rows: Vec<(&Group, f32, String)> = by_mem.iter().take(10).map(|g| (*g, g.mem as f32, fmt::bytes(g.mem))).collect();
-        let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len() as f32 * 30.0), Sense::hover());
-        top_list(ui, r, "Biggest memory users (private working set, grouped by name)", MEM_COL, &rows);
-        ui.add_space(GAP);
     });
     None
 }
@@ -702,6 +754,25 @@ pub fn disk(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         header(ui, "Disk", &format!("{} physical disks  ·  reading {}  ·  writing {}", s.disks.len(), fmt::rate(total_r), fmt::rate(total_w)));
         if s.disks.is_empty() {
             return;
+        }
+
+        // who's using it, before the per-disk graphs
+        let groups = grouped(s);
+        if s.disk_trace {
+            let mut by: Vec<&Group> = groups.iter().filter(|g| g.disk_r + g.disk_w > 0.0).collect();
+            by.sort_by(|a, b| (b.disk_r + b.disk_w).total_cmp(&(a.disk_r + a.disk_w)));
+            let rows: Vec<(&Group, f32, String)> =
+                by.iter().map(|g| (*g, (g.disk_r + g.disk_w) as f32, format!("R {}  ·  W {}", fmt::rate(g.disk_r), fmt::rate(g.disk_w)))).collect();
+            let (or, ow) = s.disk_orphan;
+            // I/O whose thread exited before we could name its process: shown so the sum adds up
+            let note = if or + ow > 0.0 { format!("+ {} from programs that already exited", fmt::rate(or + ow)) } else { String::new() };
+            who_card(ui, w, "Who's using the disk", DISK_COL, &note, &rows, 170.0, "No disk activity in the last update");
+        } else {
+            // without administrator: all I/O (disk, network and devices together), still useful
+            let mut by: Vec<&Group> = groups.iter().filter(|g| g.io >= 1.0).collect();
+            by.sort_by(|a, b| b.io.total_cmp(&a.io));
+            let rows: Vec<(&Group, f32, String)> = by.iter().map(|g| (*g, g.io as f32, fmt::rate(g.io))).collect();
+            who_card(ui, w, "Who's moving data", DISK_COL, "Disk, network and devices together. Elevate to see disk alone", &rows, 110.0, "Nothing is moving data right now");
         }
         let p = ui.painter().clone();
         for (i, d) in s.disks.iter().enumerate() {
@@ -757,41 +828,6 @@ pub fn disk(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
             ui.add_space(GAP + 8.0);
         }
 
-        // Which programs are using the disk
-        if s.disk_trace {
-            let groups = grouped(s);
-            let mut by: Vec<&Group> = groups.iter().filter(|g| g.disk_r + g.disk_w > 0.0).collect();
-            by.sort_by(|a, b| (b.disk_r + b.disk_w).total_cmp(&(a.disk_r + a.disk_w)));
-            let rows: Vec<(&Group, f32, String)> = by
-                .iter()
-                .take(10)
-                .map(|g| (*g, (g.disk_r + g.disk_w) as f32, format!("R {}  ·  W {}", fmt::rate(g.disk_r), fmt::rate(g.disk_w))))
-                .collect();
-            let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
-            top_list_w(ui, r, "Programs using the disk (physical I/O)", DISK_COL, &rows, 170.0);
-            let (or, ow) = s.disk_orphan;
-            if or + ow > 0.0 {
-                // I/O whose thread exited before we could name its process: shown so the sum adds up
-                let t = format!("+ {} from programs that already exited", fmt::rate(or + ow));
-                widgets::fit(&p, pos2(r.max.x - 18.0, r.min.y + 24.0), Align2::RIGHT_CENTER, &t, reg(11.0), r.width() * 0.4, txt_faint());
-            }
-            if rows.is_empty() {
-                p.text(pos2(r.min.x + 18.0, r.min.y + 60.0), Align2::LEFT_CENTER, "No disk activity in the last update", reg(12.5), txt_faint());
-            }
-        } else {
-            let (r, _) = ui.allocate_exact_size(vec2(w, 74.0), Sense::hover());
-            widgets::card(&p, r, card());
-            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, "Which programs are using the disk", DISK_COL, r.width() - 36.0);
-            widgets::fit(
-                &p,
-                pos2(r.min.x + 18.0, r.min.y + 50.0),
-                Align2::LEFT_CENTER,
-                "Click Elevate (bottom left) to see per-program physical reads, writes and response time.",
-                reg(12.0),
-                r.width() - 36.0,
-                txt_faint(),
-            );
-        }
         ui.add_space(GAP);
     });
     None
@@ -820,6 +856,20 @@ pub fn network(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
             "Network",
             &format!("{n} connected adapter{}  ·  down {}  ·  up {}", if n == 1 { "" } else { "s" }, fmt::bits(down), fmt::bits(up)),
         );
+
+        // who's using it, before the adapters
+        let groups = grouped(s);
+        if s.net_trace {
+            let mut by: Vec<&Group> = groups.iter().filter(|g| g.net_rx + g.net_tx > 0.0).collect();
+            by.sort_by(|a, b| (b.net_rx + b.net_tx).total_cmp(&(a.net_rx + a.net_tx)));
+            let rows: Vec<(&Group, f32, String)> = by.iter().map(|g| (*g, (g.net_rx + g.net_tx) as f32, format!("↓ {}  ·  ↑ {}", fmt::bits(g.net_rx), fmt::bits(g.net_tx)))).collect();
+            who_card(ui, w, "Who's using the network", NET_COL, "≈ Windows' estimate per program", &rows, 190.0, "No network traffic in the last update");
+        } else {
+            let mut by: Vec<&Group> = groups.iter().filter(|g| g.conns.tcp > 0).collect();
+            by.sort_by(|a, b| b.conns.tcp.cmp(&a.conns.tcp));
+            let rows: Vec<(&Group, f32, String)> = by.iter().map(|g| (*g, g.conns.tcp as f32, format!("{} connected", g.conns.tcp))).collect();
+            who_card(ui, w, "Who's connected", NET_COL, "Elevate to see download and upload speed per program", &rows, 130.0, "No open connections");
+        }
         let p = ui.painter().clone();
         if s.nets.is_empty() {
             let (r, _) = ui.allocate_exact_size(vec2(w, 74.0), Sense::hover());
@@ -889,37 +939,6 @@ pub fn network(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
             }
             ui.add_space(GAP + 8.0);
         }
-
-        let groups = grouped(s);
-        // Which programs are using the network (kernel trace, administrator only)
-        if s.net_trace {
-            let mut by: Vec<&Group> = groups.iter().filter(|g| g.net_rx + g.net_tx > 0.0).collect();
-            by.sort_by(|a, b| (b.net_rx + b.net_tx).total_cmp(&(a.net_rx + a.net_tx)));
-            let rows: Vec<(&Group, f32, String)> = by
-                .iter()
-                .take(10)
-                .map(|g| (*g, (g.net_rx + g.net_tx) as f32, format!("↓ {}  ·  ↑ {}", fmt::bits(g.net_rx), fmt::bits(g.net_tx))))
-                .collect();
-            let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
-            top_list_w(ui, r, "Programs using the network", NET_COL, &rows, 190.0);
-            if rows.is_empty() {
-                p.text(pos2(r.min.x + 18.0, r.min.y + 60.0), Align2::LEFT_CENTER, "No network traffic in the last update", reg(12.5), txt_faint());
-            }
-        } else {
-            let (r, _) = ui.allocate_exact_size(vec2(w, 74.0), Sense::hover());
-            widgets::card(&p, r, card());
-            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, "Which programs are using the network", NET_COL, r.width() - 36.0);
-            widgets::fit(
-                &p,
-                pos2(r.min.x + 18.0, r.min.y + 50.0),
-                Align2::LEFT_CENTER,
-                "Click Elevate (bottom left) to see download and upload speed per program.",
-                reg(12.0),
-                r.width() - 36.0,
-                txt_faint(),
-            );
-        }
-        ui.add_space(GAP);
 
         // Open connections: available without administrator
         let mut by: Vec<&Group> = groups.iter().filter(|g| g.conns.total() > 0).collect();
@@ -1008,6 +1027,15 @@ pub fn gpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         }
         let g = &s.gpus[sel];
 
+        // who's using it, before the graphs (per-program GPU figures are Windows' estimates)
+        let groups = grouped(s);
+        if s.gpu_proc {
+            let mut by: Vec<&Group> = groups.iter().filter(|g| g.gpu >= 0.1 || g.vram >= 64 << 20).collect();
+            by.sort_by(|a, b| b.gpu.total_cmp(&a.gpu).then(b.vram.cmp(&a.vram)));
+            let rows: Vec<(&Group, f32, String)> = by.iter().map(|g| (*g, g.gpu, format!("≈ {:.0}%  ·  {} VRAM", g.gpu, fmt::bytes(g.vram)))).collect();
+            who_card(ui, w, "Who's using the GPU", GPU_COL, "≈ Windows' estimate per program", &rows, 170.0, "Nothing is using the GPU right now");
+        }
+
         let (r, _) = ui.allocate_exact_size(vec2(w, 280.0), Sense::hover());
         let p = ui.painter().clone();
         widgets::card(&p, r, card());
@@ -1086,7 +1114,6 @@ pub fn gpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         }
 
         ui.add_space(GAP);
-        let groups = grouped(s);
         let mut by: Vec<&Group> = groups.iter().filter(|g| g.vram > 0).collect();
         by.sort_by(|a, b| b.vram.cmp(&a.vram));
         let rows: Vec<(&Group, f32, String)> = by.iter().take(10).map(|g| (*g, g.vram as f32, fmt::bytes(g.vram))).collect();
