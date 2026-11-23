@@ -96,8 +96,12 @@ memory" button: emptying every app's memory at once makes the PC slower, not fas
 
 ## What is this, and why is it busy?
 
-Click any program, in Processes, on the Dashboard, or in the "Who's using it" list at the top of
-the CPU, Memory, Disk, Network and GPU pages, and a panel slides in on the right with:
+The CPU, Memory, Disk, Network and GPU pages share one layout: the main graph, five key numbers,
+a "Who's using it" list of the programs using the most, and a "More details" bar that opens the
+technical parts (per-core graphs, memory breakdown, each disk and adapter, GPU engines and sensors).
+
+Click any program, in Processes, on the Dashboard, or in a "Who's using it" list, and a panel
+slides in on the right with:
 
 - **What it is**, in plain words. For script runners it reads the command line, so `python.exe`
   says "Python script: `C:\bots\scraper.py`". Chrome, Edge and Electron apps (Discord, VS Code,

@@ -129,6 +129,7 @@ and write down anything that looks wrong.
 - [ ] "Started by" reads right: an app you opened says you started it; a service says Windows; the parent link opens the parent
 - [ ] Open location shows the file selected in File Explorer; Search opens a web search; Priority changes stick (check Task Manager > Details)
 - [ ] End task on one process, and End all on a program with several, ask first and report what happened. End all on svchost.exe refuses with a note
-- [ ] CPU, Memory, Disk, Network and GPU pages start with a "Who's using it" list; clicking a program there opens the same panel
+- [ ] CPU, Memory, Disk, Network and GPU pages all read the same way: main graph, five key numbers, "Who's using it" (click a program to open the panel), then a closed "More details" bar
+- [ ] "More details" opens and closes: CPU's per-core graphs, Memory's breakdown, each disk and adapter, GPU engines and sensors, and the video memory list (whose rows also open the panel)
 - [ ] Dashboard's Top CPU / Top memory rows and the memory tiles open the panel too
 - [ ] Without Elevate: Disk's list shows "Who's moving data" and Network's shows "Who's connected"; the panel says to Elevate for disk and network
