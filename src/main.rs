@@ -7,12 +7,15 @@ mod autostart;
 mod apps;
 mod boost;
 mod fmt;
+mod games;
 mod platform;
 mod settings;
 mod shot;
+mod steady;
 mod sys;
 mod theme;
 mod tray;
+mod trial;
 mod ui;
 
 use eframe::egui;
@@ -63,7 +66,7 @@ fn main() -> eframe::Result<()> {
     egui::epaint::text::set_subpixel(platform::subpixel_order());
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(TITLE)
-        .with_inner_size([1180.0, 760.0])
+        .with_inner_size(shot::size().unwrap_or([1180.0, 760.0]))
         .with_min_inner_size([860.0, 540.0])
         .with_decorations(false)
         .with_resizable(true)

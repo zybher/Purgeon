@@ -305,7 +305,10 @@ impl eframe::App for App {
         if let Some(s) = self.shared.take() {
             self.snaps += 1;
             if self.snaps % 30 == 0 {
-                let live: std::collections::HashSet<&str> = s.procs.iter().filter_map(|p| p.path.as_deref()).collect();
+                let mut live: std::collections::HashSet<&str> = s.procs.iter().filter_map(|p| p.path.as_deref()).collect();
+                // games keep their icons while they're closed
+                let games = crate::games::known();
+                live.extend(games.iter().flat_map(|g| g.iter()).filter_map(|g| g.icon.as_deref()));
                 icons::retain(ctx, &live);
             }
             self.snap = Some(s);

@@ -43,7 +43,7 @@ pub fn set_text(key: &str, value: Option<&str>) {
         };
         m.iter().map(|(k, v)| format!("{k}={v}\n")).collect::<String>()
     });
-    if let Some(p) = path() {
+    if let Some(p) = path().filter(|_| !crate::shot::on()) {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }

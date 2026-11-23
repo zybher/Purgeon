@@ -81,12 +81,72 @@ pub fn paint(p: &Painter, rect: Rect, g: &Graph) {
         p.circle_filled(q, 4.0, card());
         p.circle_filled(q, 3.0, s.col);
     }
-    let text = format!("{}  ·  {}", (g.label)(&vals), crate::fmt::ago((n - 1 - i) as f32 * g.interval));
-    let gal = p.layout_no_wrap(text, sb(11.5), txt());
+    let value = (g.label)(&vals);
+    let ago = crate::fmt::ago((n - 1 - i) as f32 * g.interval);
+    let lay = |text: String| p.layout_no_wrap(text, sb(11.5), txt());
+    let room = rect.width() - 20.0;
+    // A narrow graph puts the time on a second line; narrower still, only the line and dots show
+    let mut gal = lay(format!("{value}  ·  {ago}"));
+    if gal.size().x > room {
+        gal = lay(format!("{value}
+{ago}"));
+        if gal.size().x > room {
+            return;
+        }
+    }
     let w = gal.size().x + 16.0;
-    let bx = (x - w / 2.0).clamp(rect.min.x + 2.0, rect.max.x - w - 2.0);
-    let br = Rect::from_min_size(pos2(bx, rect.min.y + 6.0), vec2(w, 22.0));
+    // not `clamp`: it panics if rounding ever leaves the right limit a hair left of the left one
+    let bx = (x - w / 2.0).min(rect.max.x - w - 2.0).max(rect.min.x + 2.0);
+    let br = Rect::from_min_size(pos2(bx, rect.min.y + 6.0), vec2(w, (gal.size().y + 6.0).max(22.0)));
     p.rect_filled(br.translate(vec2(0.0, 2.0)), 7.0, Color32::from_black_alpha(80));
     p.rect_filled(br, 7.0, Color32::from_gray(0x2a));
     p.galley(pos2(br.min.x + 8.0, br.center().y - gal.size().y / 2.0), gal, txt());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Paints one hovered graph; returns the readout, after checking that it lies inside the graph
+    fn readout(ctx: &egui::Context, rect: Rect, at: f32, values: &[f32], label: &dyn Fn(&[f32]) -> String) -> Option<String> {
+        let data: Vec<Vec<f32>> = values.iter().map(|v| vec![*v; HIST]).collect();
+        let series: Vec<Series> = data.iter().map(|d| Series { data: d, col: txt(), fill: true, width: 1.0 }).collect();
+        let hover = Some(pos2(rect.min.x + rect.width() * at, rect.center().y));
+        let g = Graph { series: &series, max: 100.0, scroll: 0.5, grid: false, hover, interval: 1.0, label };
+        let out = ctx.run(Default::default(), |ctx| {
+            paint(&ctx.layer_painter(egui::LayerId::background()), rect, &g);
+        });
+        out.shapes.iter().find_map(|c| match &c.shape {
+            Shape::Text(t) => {
+                let r = t.galley.rect.translate(t.pos.to_vec2());
+                // half a point of slack: text snaps to whole pixels
+                assert!(rect.expand(0.51).contains_rect(r), "{:?} at {r:?} leaves {rect:?}", t.galley.text());
+                Some(t.galley.text().to_string())
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn hover_readout_survives_any_width() {
+        let pct = |v: &[f32]| format!("{:.1}%  /  {:.1}%", v[0], v[1]);
+        let rate = |v: &[f32]| format!("R {}  ·  W {}", crate::fmt::rate(v[0] as f64), crate::fmt::rate(v[1] as f64));
+        for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+            let ctx = egui::Context::default();
+            super::super::setup_style(&ctx, true);
+            ctx.set_pixels_per_point(scale);
+            let _ = ctx.run(Default::default(), |_| {});
+            for w in 0..=720 {
+                let rect = Rect::from_min_size(pos2(20.3, 20.0), vec2(w as f32 * 0.997, 150.0));
+                for at in [0.0, 0.5, 0.999] {
+                    let card = readout(&ctx, rect, at, &[100.0, 100.0], &pct);
+                    // the dashboard's narrowest cards are about 130 across and still show both numbers
+                    if w >= 125 {
+                        assert!(card.is_some_and(|t| t.contains("100.0%  /  100.0%")), "no readout at width {w}");
+                    }
+                    readout(&ctx, rect, at, &[999_900_000.0, 999_900_000.0], &rate);
+                }
+            }
+        }
+    }
 }

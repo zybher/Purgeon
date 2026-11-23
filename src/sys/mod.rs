@@ -2,6 +2,7 @@
 //! of calls (one NtQuerySystemInformation for all processes) and publishes an immutable
 //! `Snapshot` the UI picks up.
 
+pub mod audio;
 pub mod clock;
 pub mod disk;
 pub mod etw;

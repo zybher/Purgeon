@@ -345,7 +345,7 @@ pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         ui.add_space(GAP);
         summary(ui, s, w);
         ui.add_space(GAP);
-        super::tools::cards(ui, w, GAP);
+        super::tools::cards(ui, s, w, GAP);
         ui.add_space(GAP);
         let groups = grouped(s);
         let (row, _) = ui.allocate_exact_size(vec2(w, 300.0), Sense::hover());

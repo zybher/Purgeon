@@ -29,6 +29,15 @@ extern "system" {
     fn PostMessageW(h: isize, msg: u32, w: usize, l: isize) -> i32;
 }
 
+/// The process of the window in front
+pub fn front_pid() -> u32 {
+    unsafe {
+        let mut pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &mut pid);
+        pid
+    }
+}
+
 /// Visible top-level windows (not dialogs owned by another window), with their process ids
 fn windows() -> Vec<(isize, u32)> {
     unsafe extern "system" fn cb(h: isize, l: isize) -> i32 {
@@ -120,6 +129,9 @@ fn load_use() -> HashMap<String, u64> {
 }
 
 fn save_use(st: &State, now: Instant) {
+    if crate::shot::on() {
+        return;
+    }
     let Some(p) = use_file() else { return };
     let unix = now_unix();
     let mut out = format!("saved\t{unix}\n");
@@ -152,11 +164,7 @@ pub fn step(s: &Snapshot) {
     let now = Instant::now();
     let wins = windows();
     let on_screen: HashSet<u32> = wins.iter().map(|w| w.1).collect();
-    let front = unsafe {
-        let mut pid = 0;
-        GetWindowThreadProcessId(GetForegroundWindow(), &mut pid);
-        pid
-    };
+    let front = front_pid();
     let windir = windows_dir();
     let me = std::process::id();
 
@@ -274,7 +282,7 @@ pub fn step(s: &Snapshot) {
     });
 }
 
-/// Apps with a window on screen, biggest first (for the Boost picker)
+/// Apps with a window on screen, biggest first (the game scan looks at these too)
 pub fn open_apps() -> Vec<App> {
     with(|st| st.apps.iter().filter(|a| a.windowed).cloned().collect())
 }
@@ -290,11 +298,11 @@ pub struct Suggestions {
     pub busy: bool,
 }
 
-pub fn suggestions(skip: Option<&str>) -> Suggestions {
+pub fn suggestions(skip: Option<&crate::games::Target>) -> Suggestions {
     with(|st| {
         let up = st.started.map_or(Duration::ZERO, |t| t.elapsed());
         Suggestions {
-            apps: st.apps.iter().filter(|a| a.idle >= IDLE_FOR && a.mem >= MIN_RAM && Some(a.exe.as_str()) != skip).cloned().collect(),
+            apps: st.apps.iter().filter(|a| a.idle >= IDLE_FOR && a.mem >= MIN_RAM && !skip.is_some_and(|t| t.has(&a.exe, a.path.as_deref()))).cloned().collect(),
             warming: (up < IDLE_FOR).then(|| IDLE_FOR - up),
             avail_frac: st.avail_frac,
             note: st.note.as_ref().filter(|n| n.2.elapsed() < Duration::from_secs(20)).map(|n| (n.0.clone(), n.1)),
@@ -312,6 +320,9 @@ pub fn has_window(exe: &str) -> bool {
 /// Closes an app the user confirmed. With a window open it is asked to close, as if its X was
 /// clicked, so it can ask to save. Without one (background and tray apps) it is ended.
 pub fn close(exe: &str) {
+    if crate::shot::on() {
+        return;
+    }
     let Some((name, pids, avail)) = with(|st| {
         let a = st.apps.iter().find(|a| a.exe == exe)?;
         Some((a.name.clone(), st.pids.get(exe).cloned()?, st.avail))
