@@ -651,6 +651,39 @@ fn session() -> &'static Mutex<Option<Session>> {
     S.get_or_init(Default::default)
 }
 
+/// The frame clock's ticks per second
+pub fn frame_freq() -> i64 {
+    QPC_FREQ.load(Ordering::Relaxed).max(1)
+}
+
+/// The frame clock now, and the time up to which every frame has arrived
+pub fn frame_clock() -> (i64, i64) {
+    let mut now = 0i64;
+    unsafe { QueryPerformanceCounter(&mut now) };
+    (now, now - (SETTLE * frame_freq() as f64) as i64)
+}
+
+/// The busiest of these processes' frame streams over the last second, DirectX's own preferred
+pub fn frame_source(pids: &[u32]) -> Option<(u32, u8)> {
+    let since = frame_clock().1 - frame_freq();
+    let s = shown().lock().ok()?;
+    s.iter()
+        .filter(|(k, _)| pids.contains(&k.0))
+        .map(|(k, q)| (*k, q.iter().filter(|&&t| t > since).count()))
+        .filter(|&(_, n)| n >= 4)
+        .max_by_key(|&(k, n)| (k.1 == 0, n))
+        .map(|(k, _)| k)
+}
+
+/// One stream's frame times in `(after, until]`. Only about 3 s are kept, so ask often.
+pub fn frame_times(source: (u32, u8), after: i64, until: i64) -> Vec<i64> {
+    let Ok(mut s) = shown().lock() else { return Vec::new() };
+    // forget programs that stopped drawing, as frame_stats does
+    let old = until - 5 * frame_freq();
+    s.retain(|_, q| q.back().is_some_and(|&t| t >= old));
+    s.get(&source).map_or_else(Vec::new, |q| q.iter().copied().filter(|&t| t > after && t <= until).collect())
+}
+
 /// The numbers for whichever of these processes draws the most
 pub fn frame_stats(pids: &[u32]) -> FrameStats {
     let f = QPC_FREQ.load(Ordering::Relaxed) as f64;

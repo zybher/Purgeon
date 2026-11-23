@@ -3,8 +3,10 @@
 # Purgeon
 A detailed Windows system monitor for CPU, RAM, VRAM, disk and more. Written fully in Rust.
 
-Purgeon only reads system-wide counters and never touches another program's memory, so it is
-safe to keep open next to games with anti-cheat. How each number is measured, and where it can be
+For monitoring, Purgeon only reads system-wide counters and never touches another program's
+memory, so it is made to sit next to games with anti-cheat. Boost and its experimental part do
+change settings Windows keeps for a process, and only once you switch them on
+(see [Boost a game](#boost-a-game)). How each number is measured, and where it can be
 wrong, is in [docs/ACCURACY.md](docs/ACCURACY.md).
 
 ## Compared with Task Manager
@@ -72,13 +74,41 @@ On the **Settings** page you can make the bar bigger (100%, 125%, 150%, or Auto,
 press the new keys. It needs two of Ctrl, Alt and Shift (or one with an F key), so it never takes
 a key other apps use on their own. Both are saved in `%APPDATA%\Purgeon\settings.ini`.
 
-## Boost an app
+## Boost a game
 
-On the Dashboard, pick a game or app and click **Boost**. Whenever it runs, Purgeon raises
+On the Dashboard, click a game in the **Boost a game** row. The row lists the games found on the PC
+(launcher records, plus programs that ship with a game engine or store SDK), running ones first;
+finding them only reads files and the registry. Whenever it runs, Purgeon raises
 its priority one step (Normal to Above normal, never higher) and switches Windows to the High
-performance power plan. When the app closes, the boost is turned off, or Purgeon quits, the
+performance power plan. When the game closes, the boost is turned off, or Purgeon quits, the
 priority and the power plan go back to what they were. Purgeon remembers the pick and boosts the
-app every time it runs.
+game every time it runs.
+
+To see whether it does anything for a game, click **Run 5 min test** on the boosted game's card and
+keep playing. Purgeon plays 24 rounds off and on (off, on, on, off) and compares the deepest dip
+(the worst fifth of a second in a round, whatever caused it), the 1% low and the average FPS. It says
+"No measurable difference" unless the change is at least 2% and clearly bigger than the swing between
+rounds. Dips that come at random and differ in depth are hard to measure: one run can miss a real
+gain, so that answer isn't proof that nothing changed. The test pauses while the game isn't in
+front. Counting frames needs administrator, the same as the overlay's FPS.
+
+### Steadier frames (experimental)
+
+Off until you switch it on, on the boosted game's card. It has not been shown to help any game yet.
+
+- On a CPU with fast and efficient cores, the game prefers the fast ones (a Windows CPU set, the
+  soft kind of affinity). Cores that you or the game already chose are left alone.
+- It suggests busy background apps. Only those you click **Lower** on drop from Normal to Below
+  normal, while the game runs. One is back at Normal while it is in front, has sound or uses the GPU.
+- Windows' own programs, services, games, anti-cheat, launchers, browsers, media and voice apps and
+  anything running as administrator are never offered. Nothing is closed.
+- Everything is put back when the game closes, the switch goes off, or Boost stops. After a crash
+  the next start puts back what it changed. Programs that a lowered app started meanwhile can stay
+  at Below normal until they exit, if they are ones Purgeon won't touch or Purgeon crashed.
+
+With it on, the test keeps Boost on and compares Boost alone against Boost plus this. It uses no
+injection, driver or memory access, but no anti-cheat maker lists such changes as allowed, and
+some block them.
 
 This is honest help, not magic: it makes a small difference when the CPU is busy with other
 things, and none when the graphics card is what limits a game. Some games' anti-cheat refuses

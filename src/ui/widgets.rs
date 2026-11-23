@@ -264,5 +264,5 @@ pub fn avatar(p: &Painter, r: Rect, name: &str) {
     let col: Color32 = egui::ecolor::Hsva::new(hue, 0.45, 0.55, 1.0).into();
     p.rect_filled(r, 5.0, col.gamma_multiply(0.85));
     let ch = name.chars().next().unwrap_or('?').to_ascii_uppercase();
-    p.text(r.center() + vec2(0.0, 0.5), Align2::CENTER_CENTER, ch, sb(10.5), Color32::WHITE);
+    p.text(r.center() + vec2(0.0, 0.5), Align2::CENTER_CENTER, ch, sb(10.5_f32.max(r.height() * 0.4)), Color32::WHITE);
 }
