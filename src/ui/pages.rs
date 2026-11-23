@@ -65,6 +65,10 @@ struct Group {
     mem: u64,
     shared: u64,
     vram: u64,
+    /// GPU use, 0..100 (Windows' estimate)
+    gpu: f32,
+    /// All I/O (disk, network, devices) per second: known without administrator
+    io: f64,
     disk_r: f64,
     disk_w: f64,
     net_rx: f64,
@@ -84,6 +88,8 @@ fn grouped(s: &Snapshot) -> Vec<Group> {
             mem: 0,
             shared: 0,
             vram: 0,
+            gpu: 0.0,
+            io: 0.0,
             disk_r: 0.0,
             disk_w: 0.0,
             net_rx: 0.0,
@@ -98,6 +104,8 @@ fn grouped(s: &Snapshot) -> Vec<Group> {
         g.mem += p.private_ws;
         g.shared = g.shared.max(p.shared());
         g.vram += p.vram;
+        g.gpu = (g.gpu + p.gpu).min(100.0);
+        g.io += p.io_read + p.io_write;
         g.disk_r += p.disk_read;
         g.disk_w += p.disk_write;
         g.net_rx += p.net_rx;
@@ -130,8 +138,15 @@ fn top_list_w(ui: &mut Ui, r: Rect, title: &str, col: Color32, rows: &[(&Group, 
         if rr.max.y > r.max.y - 6.0 {
             break;
         }
-        let resp = ui.interact(rr, ui.id().with((title, i)), Sense::hover());
+        // a click opens the program's details
+        let resp = ui.interact(rr, ui.id().with((title, i)), Sense::click());
         let h = ease(ui.ctx(), resp.id.with("h"), resp.hovered());
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            super::detail::open_group(ui.ctx(), &g.name);
+        }
         p.rect_filled(rr, 7.0, wa((h * 9.0) as u8));
         super::icons::paint(ui.ctx(), &p, Rect::from_center_size(pos2(rr.min.x + 20.0, rr.center().y), vec2(18.0, 18.0)), &g.name, g.path.as_ref());
         p.text(pos2(rr.max.x - 10.0, rr.center().y), Align2::RIGHT_CENTER, txtv, sb(12.5), txt());
@@ -146,6 +161,24 @@ fn top_list_w(ui: &mut Ui, r: Rect, title: &str, col: Color32, rows: &[(&Group, 
         }
         widgets::meter(&p, br, glide(ui.ctx(), resp.id.with("bar"), v / max, 10.0), col);
     }
+}
+
+/// "Who's using it": the programs using the most of a page's resource, at the top of the page.
+/// Click one for its details.
+#[allow(clippy::too_many_arguments)]
+fn who_card(ui: &mut Ui, w: f32, title: &str, col: Color32, note: &str, rows: &[(&Group, f32, String)], value_w: f32, empty: &str) {
+    let rows = &rows[..rows.len().min(6)];
+    let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
+    top_list_w(ui, r, title, col, rows, value_w);
+    let p = ui.painter();
+    if !note.is_empty() {
+        let tw = p.layout_no_wrap(title.to_string(), sb(12.5), txt()).size().x;
+        widgets::fit(p, pos2(r.max.x - 18.0, r.min.y + 24.0), Align2::RIGHT_CENTER, note, reg(11.0), r.width() - tw - 80.0, txt_faint());
+    }
+    if rows.is_empty() {
+        p.text(pos2(r.min.x + 18.0, r.min.y + 60.0), Align2::LEFT_CENTER, empty, reg(12.5), txt_faint());
+    }
+    ui.add_space(GAP);
 }
 
 /// "Your PC has plenty of headroom", then up to five programs in plain words
@@ -196,7 +229,13 @@ fn summary(ui: &mut Ui, s: &Snapshot, w: f32) {
         widgets::fit(&p, pos2(vr.max.x + 6.0, t.min.y + 47.5), Align2::LEFT_CENTER, &of, reg(11.0), t.max.x - 10.0 - (vr.max.x + 6.0), txt_faint());
         widgets::meter(&p, Rect::from_min_size(pos2(t.min.x + 12.0, t.min.y + 63.0), vec2(tw - 24.0, 3.0)), share.clamp(0.0, 1.0), MEM_COL);
         let procs = if g.count > 1 { format!("{} processes", g.count) } else { "1 process".into() };
-        ui.interact(t, egui::Id::new(("top_app", i)), Sense::hover()).on_hover_text(format!("{}  ·  {procs}", g.name));
+        let resp = ui.interact(t, egui::Id::new(("top_app", i)), Sense::click()).on_hover_text(format!("{}  ·  {procs}", g.name));
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() {
+            super::detail::open_group(ui.ctx(), &g.name);
+        }
     }
 }
 
@@ -223,6 +262,11 @@ fn chevron(p: &Painter, c: egui::Pos2, open: f32, col: Color32) {
     let s = Stroke::new(1.6_f32, col);
     p.line_segment([rot(-2.5, -4.5), rot(2.0, 0.0)], s);
     p.line_segment([rot(2.0, 0.0), rot(-2.5, 4.5)], s);
+}
+
+/// A small chevron pointing right: "opens more"
+pub(super) fn chevron_right(p: &Painter, c: egui::Pos2, col: Color32) {
+    chevron(p, c, 0.0, col);
 }
 
 pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
@@ -345,7 +389,7 @@ pub fn dashboard(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         ui.add_space(GAP);
         summary(ui, s, w);
         ui.add_space(GAP);
-        super::tools::cards(ui, w, GAP);
+        super::tools::cards(ui, s, w, GAP);
         ui.add_space(GAP);
         let groups = grouped(s);
         let (row, _) = ui.allocate_exact_size(vec2(w, 300.0), Sense::hover());
@@ -499,6 +543,72 @@ fn details(ui: &mut Ui, s: &Snapshot, part: Part, w: f32, scroll: f32) -> Option
     go
 }
 
+// ---- one layout for CPU, Memory, Disk, Network and GPU ----------------------------------------
+//
+//   header
+//   the main graph, with its headline number
+//   five key numbers
+//   "Who's using it": the programs using the most, click one for its details
+//   "More details": the technical parts (per-core graphs, engines, sensors...), closed at first
+
+/// The page's main graph card: a caption, a legend, a big number and the graph
+#[allow(clippy::too_many_arguments)]
+fn main_card(ui: &mut Ui, w: f32, title: &str, col: Color32, legend: &[(&str, Color32)], value: &str, suffix: &str, series: &[Series], max: f32, label: &dyn Fn(&[f32]) -> String, scroll: f32, interval: f32) {
+    let (r, _) = ui.allocate_exact_size(vec2(w, 270.0), Sense::hover());
+    let p = ui.painter().clone();
+    widgets::card(&p, r, card());
+    // legend on the right, right-aligned
+    let mut lx = r.max.x - 18.0;
+    for (name, c) in legend.iter().rev() {
+        let tw = p.layout_no_wrap(name.to_string(), sb(12.5), txt()).size().x;
+        lx -= tw + 14.0;
+        caption(&p, lx, r.min.y + 24.0, name, *c);
+        lx -= 14.0;
+    }
+    caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, title, col, (lx - r.min.x - 30.0).max(80.0));
+    big(&p, r.min.x + 18.0, r.min.y + 60.0, value, suffix, 30.0);
+    let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 90.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
+    graph::paint(&p, gr, &Graph { series, max, scroll, grid: true, hover: hover_in(ui, gr), interval, label });
+    ui.add_space(GAP);
+}
+
+/// The five numbers under the main graph, in one row on a normal-sized window
+fn key_tiles(ui: &mut Ui, w: f32, tiles: &[(String, String, Option<Color32>)]) {
+    let p = ui.painter().clone();
+    let o = ui.cursor().min;
+    let (rects, th) = widgets::tile_grid(o, w, tiles.len(), 140.0, 64.0, 12.0);
+    ui.allocate_exact_size(vec2(w, th), Sense::hover());
+    for (tr, (c, v, dcol)) in rects.iter().zip(tiles) {
+        widgets::tile(&p, *tr, c, v, *dcol);
+    }
+    ui.add_space(GAP);
+}
+
+/// "More details": a bar that opens and closes the technical part of a page (closed at first).
+/// Returns whether it is open.
+fn more(ui: &mut Ui, w: f32, key: &str, what: &str) -> bool {
+    let ctx = ui.ctx().clone();
+    let id = egui::Id::new(("more", key));
+    let mut open = ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    let (r, _) = ui.allocate_exact_size(vec2(w, 52.0), Sense::hover());
+    let (resp, r) = widgets::card_button(ui, r, id.with("btn"));
+    let p = ui.painter();
+    let o = ease(&ctx, id.with("k"), open);
+    chevron(p, pos2(r.min.x + 22.0, r.center().y), o, txt_dim());
+    let tr = p.text(pos2(r.min.x + 38.0, r.center().y), Align2::LEFT_CENTER, "More details", sb(13.0), txt());
+    widgets::fit(p, pos2(tr.max.x + 12.0, r.center().y), Align2::LEFT_CENTER, what, reg(12.0), r.max.x - 18.0 - tr.max.x - 12.0, txt_faint());
+    if resp.clicked() {
+        open = !open;
+        ctx.data_mut(|d| d.insert_temp(id, open));
+    }
+    ui.add_space(GAP);
+    open
+}
+
+fn t(c: &str, v: String, d: Option<Color32>) -> (String, String, Option<Color32>) {
+    (c.to_string(), v, d)
+}
+
 pub fn cpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
@@ -508,64 +618,69 @@ pub fn cpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let ctx = ui.ctx().clone();
         header(ui, "CPU", &s.info.cpu_name);
 
-        let (r, _) = ui.allocate_exact_size(vec2(w, 300.0), Sense::hover());
-        let p = ui.painter().clone();
-        widgets::card(&p, r, card());
-        caption(&p, r.min.x + 18.0, r.min.y + 24.0, "Utilization", CPU_COL);
-        let x = caption(&p, r.max.x - 170.0, r.min.y + 24.0, "Total", CPU_COL);
-        caption(&p, x + 14.0, r.min.y + 24.0, "Kernel", KERNEL_COL);
         let v = glide(&ctx, egui::Id::new("cpu_v"), s.cpu, 10.0);
-        big(&p, r.min.x + 18.0, r.min.y + 60.0, &format!("{v:.1}%"), &format!("kernel {:.1}%", s.kernel), 30.0);
-        let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 90.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
         let series = [
             Series { data: &s.h_cpu, col: CPU_COL, fill: true, width: 1.8 },
             Series { data: &s.h_kernel, col: KERNEL_COL, fill: false, width: 1.2 },
         ];
-        graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: true, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
+        main_card(ui, w, "Utilization", CPU_COL, &[("Total", CPU_COL), ("Kernel", KERNEL_COL)], &format!("{v:.1}%"), &format!("kernel {:.1}%", s.kernel), &series, 100.0, &pct_label, scroll, s.interval);
 
-        ui.add_space(GAP);
-        let speed = if s.clocks.avg_mhz > 0.0 { format!("{:.2} GHz", s.clocks.avg_mhz / 1000.0) } else { "—".into() };
-        let tm = s.clocks.utility.map(|u| format!("{u:.1}%")).unwrap_or_else(|| "—".into());
-        let tiles: [(&str, String); 10] = [
-            ("Utilization", format!("{:.1}%", s.cpu)),
-            ("Task Manager figure", tm),
-            ("Speed", speed),
-            ("Kernel time", format!("{:.1}%", s.kernel)),
-            ("Processes", fmt::thousands(s.nprocs as u64)),
-            ("Threads", fmt::thousands(s.threads as u64)),
-            ("Handles", fmt::thousands(s.handles as u64)),
-            ("Up time", fmt::uptime(s.uptime)),
-            ("Base speed", if s.info.base_mhz > 0 { format!("{:.2} GHz", s.info.base_mhz as f32 / 1000.0) } else { "—".into() }),
-            ("Cores / threads", format!("{} / {}", s.info.physical.max(1), s.info.logical)),
-        ];
-        let o = ui.cursor().min;
-        let (rects, h) = widgets::tile_grid(o, w, tiles.len(), 150.0, 64.0, 12.0);
-        ui.allocate_exact_size(vec2(w, h), Sense::hover());
-        for (r, (c, v)) in rects.iter().zip(&tiles) {
-            widgets::tile(&p, *r, c, v, None);
-        }
+        let dash = || "—".to_string();
+        let speed = if s.clocks.avg_mhz > 0.0 { format!("{:.2} GHz", s.clocks.avg_mhz / 1000.0) } else { dash() };
+        key_tiles(
+            ui,
+            w,
+            &[
+                t("Utilization", format!("{:.1}%", s.cpu), Some(CPU_COL)),
+                t("Task Manager figure", s.clocks.utility.map(|u| format!("{u:.1}%")).unwrap_or_else(dash), None),
+                t("Speed", speed, None),
+                t("Processes", fmt::thousands(s.nprocs as u64), None),
+                t("Up time", fmt::uptime(s.uptime), None),
+            ],
+        );
 
-        ui.add_space(GAP);
-        section(ui, &format!("Logical processors  ·  {}", s.cores.len()));
-        let o = ui.cursor().min;
-        let n = s.cores.len();
-        let (rects, h) = widgets::tile_grid(o, w, n, 170.0, 92.0, 10.0);
-        ui.allocate_exact_size(vec2(w, h), Sense::hover());
-        for (i, r) in rects.iter().enumerate() {
-            p.rect_filled(*r, 10.0, card());
-            p.rect_stroke(*r, 10.0, Stroke::new(1.0_f32, border()));
-            let v = s.cores[i];
-            let lr = p.text(pos2(r.min.x + 12.0, r.min.y + 16.0), Align2::LEFT_CENTER, format!("CPU {i}"), reg(11.5), txt_faint());
-            if let Some(m) = s.clocks.mhz.get(i).filter(|m| **m > 0.0) {
-                p.text(pos2(lr.max.x + 6.0, r.min.y + 16.0), Align2::LEFT_CENTER, format!("{:.2} GHz", m / 1000.0), reg(10.5), txt_faint());
+        let groups = grouped(s);
+        let mut by: Vec<&Group> = groups.iter().filter(|g| g.cpu >= 0.05).collect();
+        by.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
+        let threads = s.info.logical.max(1) as f32;
+        let rows: Vec<(&Group, f32, String)> = by.iter().map(|g| (*g, g.cpu, format!("{}  ·  {:.1} threads", fmt::pct(g.cpu), g.cpu / 100.0 * threads))).collect();
+        who_card(ui, w, "Who's using the CPU", CPU_COL, "Click a program to see what it's doing", &rows, 170.0, "Nothing is using the CPU right now");
+
+        if more(ui, w, "cpu", &format!("{} logical processors, kernel time, threads, handles", s.cores.len())) {
+            tile_row(
+                ui,
+                w,
+                &[
+                    t("Kernel time", format!("{:.1}%", s.kernel), Some(KERNEL_COL)),
+                    t("Threads", fmt::thousands(s.threads as u64), None),
+                    t("Handles", fmt::thousands(s.handles as u64), None),
+                    t("Base speed", if s.info.base_mhz > 0 { format!("{:.2} GHz", s.info.base_mhz as f32 / 1000.0) } else { dash() }, None),
+                    t("Cores / threads", format!("{} / {}", s.info.physical.max(1), s.info.logical), None),
+                ],
+            );
+            ui.add_space(GAP);
+            section(ui, &format!("Logical processors  ·  {}", s.cores.len()));
+            let p = ui.painter().clone();
+            let o = ui.cursor().min;
+            let n = s.cores.len();
+            let (rects, h) = widgets::tile_grid(o, w, n, 170.0, 92.0, 10.0);
+            ui.allocate_exact_size(vec2(w, h), Sense::hover());
+            for (i, r) in rects.iter().enumerate() {
+                p.rect_filled(*r, 10.0, card());
+                p.rect_stroke(*r, 10.0, Stroke::new(1.0_f32, border()));
+                let v = s.cores[i];
+                let lr = p.text(pos2(r.min.x + 12.0, r.min.y + 16.0), Align2::LEFT_CENTER, format!("CPU {i}"), reg(11.5), txt_faint());
+                if let Some(m) = s.clocks.mhz.get(i).filter(|m| **m > 0.0) {
+                    p.text(pos2(lr.max.x + 6.0, r.min.y + 16.0), Align2::LEFT_CENTER, format!("{:.2} GHz", m / 1000.0), reg(10.5), txt_faint());
+                }
+                p.text(pos2(r.max.x - 12.0, r.min.y + 16.0), Align2::RIGHT_CENTER, format!("{v:.0}%"), sb(12.5), mix(txt_dim(), hi(), v / 100.0));
+                let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 30.0), pos2(r.max.x - 1.0, r.max.y - 6.0));
+                let data = s.h_cores.get(i).map(|v| v.as_slice()).unwrap_or(&[]);
+                let series = [Series { data, col: CPU_COL, fill: true, width: 1.3 }];
+                graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
             }
-            p.text(pos2(r.max.x - 12.0, r.min.y + 16.0), Align2::RIGHT_CENTER, format!("{v:.0}%"), sb(12.5), mix(txt_dim(), hi(), v / 100.0));
-            let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 30.0), pos2(r.max.x - 1.0, r.max.y - 6.0));
-            let data = s.h_cores.get(i).map(|v| v.as_slice()).unwrap_or(&[]);
-            let series = [Series { data, col: CPU_COL, fill: true, width: 1.3 }];
-            graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: false, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
+            ui.add_space(GAP);
         }
-        ui.add_space(GAP);
     });
     None
 }
@@ -580,96 +695,96 @@ pub fn memory(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let m = &s.mem;
         header(ui, "Memory", &format!("{} installed  ·  {} committed of {}", fmt::bytes(m.total), fmt::bytes(m.commit), fmt::bytes(m.commit_limit)));
 
-        let (r, _) = ui.allocate_exact_size(vec2(w, 280.0), Sense::hover());
-        let p = ui.painter().clone();
-        widgets::card(&p, r, card());
-        caption(&p, r.min.x + 18.0, r.min.y + 24.0, "In use", MEM_COL);
-        let x = caption(&p, r.max.x - 210.0, r.min.y + 24.0, "In use", MEM_COL);
-        caption(&p, x + 14.0, r.min.y + 24.0, "Committed", COMMIT_COL);
         let used = glide(&ctx, egui::Id::new("mem_v"), m.used() as f32 / 1073741824.0, 10.0);
-        big(&p, r.min.x + 18.0, r.min.y + 60.0, &format!("{used:.1} GB"), &format!("{:.0}% of {} GB", m.used_frac() * 100.0, fmt::gb(m.total)), 30.0);
-        let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 90.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
         let series = [
             Series { data: &s.h_mem, col: MEM_COL, fill: true, width: 1.8 },
             Series { data: &s.h_commit, col: COMMIT_COL, fill: false, width: 1.2 },
         ];
-        graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: true, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
+        main_card(
+            ui,
+            w,
+            "In use",
+            MEM_COL,
+            &[("In use", MEM_COL), ("Committed", COMMIT_COL)],
+            &format!("{used:.1} GB"),
+            &format!("{:.0}% of {} GB", m.used_frac() * 100.0, fmt::gb(m.total)),
+            &series,
+            100.0,
+            &pct_label,
+            scroll,
+            s.interval,
+        );
 
-        // Composition bar
-        ui.add_space(GAP);
-        let (r, _) = ui.allocate_exact_size(vec2(w, 104.0), Sense::hover());
-        widgets::card(&p, r, card());
-        let segs: Vec<(&str, u64, Color32)> = match m.lists {
-            Some(l) => vec![
-                ("In use", m.total.saturating_sub(m.avail).saturating_sub(l.modified), MEM_COL),
-                ("Modified", l.modified, WARN_COL),
-                ("Standby", l.standby, KERNEL_COL),
-                ("Free", l.free + l.zero, Color32::from_gray(0x55)),
+        key_tiles(
+            ui,
+            w,
+            &[
+                t("In use", fmt::bytes(m.used()), Some(MEM_COL)),
+                t("Available", fmt::bytes(m.avail), None),
+                t("Committed", format!("{} / {} GB", fmt::gb(m.commit), fmt::gb(m.commit_limit)), Some(COMMIT_COL)),
+                t("Cached (system)", fmt::bytes(m.cache), None),
+                t("Commit peak", fmt::bytes(m.commit_peak), None),
             ],
-            None => vec![
-                ("In use", m.used(), MEM_COL),
-                ("Available", m.avail, Color32::from_gray(0x55)),
-            ],
-        };
-        let bar = Rect::from_min_max(pos2(r.min.x + 18.0, r.min.y + 18.0), pos2(r.max.x - 18.0, r.min.y + 46.0));
-        p.rect_filled(bar, 7.0, well());
-        let total: u64 = segs.iter().map(|x| x.1).sum::<u64>().max(1);
-        let mut x = bar.min.x;
-        let mut lx = r.min.x + 18.0;
-        for (i, (name, b, col)) in segs.iter().enumerate() {
-            let fw = glide(&ctx, egui::Id::new(("seg", i)), *b as f32 / total as f32, 8.0) * bar.width();
-            let sr = Rect::from_min_size(pos2(x, bar.min.y), vec2(fw.max(0.0), bar.height()));
-            let resp = ui.interact(sr, egui::Id::new(("segh", i)), Sense::hover());
-            let h = ease(&ctx, resp.id.with("h"), resp.hovered());
-            let rounding = egui::Rounding {
-                nw: if i == 0 { 7.0 } else { 0.0 },
-                sw: if i == 0 { 7.0 } else { 0.0 },
-                ne: if i == segs.len() - 1 { 7.0 } else { 0.0 },
-                se: if i == segs.len() - 1 { 7.0 } else { 0.0 },
-            };
-            p.rect_filled(sr.shrink2(vec2(0.5, 0.0)), rounding, mix(*col, hi(), h * 0.25));
-            x += fw;
-            // legend
-            let ly = r.max.y - 30.0;
-            p.circle_filled(pos2(lx + 4.0, ly), 4.0, *col);
-            let tr = p.text(pos2(lx + 14.0, ly), Align2::LEFT_CENTER, *name, reg(12.0), txt_dim());
-            let vr = p.text(pos2(tr.max.x + 6.0, ly), Align2::LEFT_CENTER, fmt::bytes(*b), sb(12.0), txt());
-            lx = vr.max.x + 22.0;
-        }
-        if m.lists.is_none() {
-            p.text(pos2(r.max.x - 18.0, r.max.y - 30.0), Align2::RIGHT_CENTER, "Run as administrator for standby / modified / free", reg(11.5), txt_faint());
-        }
+        );
 
-        ui.add_space(GAP);
-        let mut tiles: Vec<(&str, String, Option<Color32>)> = vec![
-            ("In use", fmt::bytes(m.used()), Some(MEM_COL)),
-            ("Available", fmt::bytes(m.avail), None),
-            ("Committed", format!("{} / {}", fmt::gb(m.commit), fmt::gb(m.commit_limit)) + " GB", Some(COMMIT_COL)),
-            ("Commit peak", fmt::bytes(m.commit_peak), None),
-            ("Cached (system)", fmt::bytes(m.cache), None),
-            ("Paged pool", fmt::bytes(m.paged), None),
-            ("Non-paged pool", fmt::bytes(m.nonpaged), None),
-        ];
-        if let Some(l) = m.lists {
-            tiles.push(("Standby", fmt::bytes(l.standby), Some(KERNEL_COL)));
-            tiles.push(("Modified", fmt::bytes(l.modified), Some(WARN_COL)));
-            tiles.push(("Free", fmt::bytes(l.free + l.zero), None));
-        }
-        let o = ui.cursor().min;
-        let (rects, h) = widgets::tile_grid(o, w, tiles.len(), 150.0, 64.0, 12.0);
-        ui.allocate_exact_size(vec2(w, h), Sense::hover());
-        for (r, (c, v, d)) in rects.iter().zip(&tiles) {
-            widgets::tile(&p, *r, c, v, *d);
-        }
-
-        ui.add_space(GAP);
         let groups = grouped(s);
         let mut by_mem: Vec<&Group> = groups.iter().collect();
         by_mem.sort_by(|a, b| b.mem.cmp(&a.mem));
-        let rows: Vec<(&Group, f32, String)> = by_mem.iter().take(10).map(|g| (*g, g.mem as f32, fmt::bytes(g.mem))).collect();
-        let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len() as f32 * 30.0), Sense::hover());
-        top_list(ui, r, "Biggest memory users (private working set, grouped by name)", MEM_COL, &rows);
-        ui.add_space(GAP);
+        let total = m.total.max(1) as f32;
+        let rows: Vec<(&Group, f32, String)> = by_mem.iter().map(|g| (*g, g.mem as f32, format!("{}  ·  {:.0}%", fmt::bytes(g.mem), g.mem as f32 / total * 100.0))).collect();
+        who_card(ui, w, "Who's using memory", MEM_COL, "Click a program to see what it's doing", &rows, 150.0, "");
+
+        if more(ui, w, "mem", "What the memory is made of, kernel pools, standby and modified lists") {
+            let p = ui.painter().clone();
+            // Composition bar
+            let (r, _) = ui.allocate_exact_size(vec2(w, 104.0), Sense::hover());
+            widgets::card(&p, r, card());
+            let segs: Vec<(&str, u64, Color32)> = match m.lists {
+                Some(l) => vec![
+                    ("In use", m.total.saturating_sub(m.avail).saturating_sub(l.modified), MEM_COL),
+                    ("Modified", l.modified, WARN_COL),
+                    ("Standby", l.standby, KERNEL_COL),
+                    ("Free", l.free + l.zero, Color32::from_gray(0x55)),
+                ],
+                None => vec![("In use", m.used(), MEM_COL), ("Available", m.avail, Color32::from_gray(0x55))],
+            };
+            let bar = Rect::from_min_max(pos2(r.min.x + 18.0, r.min.y + 18.0), pos2(r.max.x - 18.0, r.min.y + 46.0));
+            p.rect_filled(bar, 7.0, well());
+            let total: u64 = segs.iter().map(|x| x.1).sum::<u64>().max(1);
+            let mut x = bar.min.x;
+            let mut lx = r.min.x + 18.0;
+            for (i, (name, b, col)) in segs.iter().enumerate() {
+                let fw = glide(&ctx, egui::Id::new(("seg", i)), *b as f32 / total as f32, 8.0) * bar.width();
+                let sr = Rect::from_min_size(pos2(x, bar.min.y), vec2(fw.max(0.0), bar.height()));
+                let resp = ui.interact(sr, egui::Id::new(("segh", i)), Sense::hover());
+                let h = ease(&ctx, resp.id.with("h"), resp.hovered());
+                let rounding = egui::Rounding {
+                    nw: if i == 0 { 7.0 } else { 0.0 },
+                    sw: if i == 0 { 7.0 } else { 0.0 },
+                    ne: if i == segs.len() - 1 { 7.0 } else { 0.0 },
+                    se: if i == segs.len() - 1 { 7.0 } else { 0.0 },
+                };
+                p.rect_filled(sr.shrink2(vec2(0.5, 0.0)), rounding, mix(*col, hi(), h * 0.25));
+                x += fw;
+                let ly = r.max.y - 30.0;
+                p.circle_filled(pos2(lx + 4.0, ly), 4.0, *col);
+                let tr = p.text(pos2(lx + 14.0, ly), Align2::LEFT_CENTER, *name, reg(12.0), txt_dim());
+                let vr = p.text(pos2(tr.max.x + 6.0, ly), Align2::LEFT_CENTER, fmt::bytes(*b), sb(12.0), txt());
+                lx = vr.max.x + 22.0;
+            }
+            if m.lists.is_none() {
+                p.text(pos2(r.max.x - 18.0, r.max.y - 30.0), Align2::RIGHT_CENTER, "Run as administrator for standby / modified / free", reg(11.5), txt_faint());
+            }
+            ui.add_space(GAP);
+            let mut tiles = vec![t("Paged pool", fmt::bytes(m.paged), None), t("Non-paged pool", fmt::bytes(m.nonpaged), None)];
+            if let Some(l) = m.lists {
+                tiles.push(t("Standby", fmt::bytes(l.standby), Some(KERNEL_COL)));
+                tiles.push(t("Modified", fmt::bytes(l.modified), Some(WARN_COL)));
+                tiles.push(t("Free", fmt::bytes(l.free + l.zero), None));
+            }
+            tile_row(ui, w, &tiles);
+            ui.add_space(GAP);
+        }
     });
     None
 }
@@ -699,100 +814,92 @@ pub fn disk(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let ctx = ui.ctx().clone();
         let total_r: f64 = s.disks.iter().map(|d| d.read).sum();
         let total_w: f64 = s.disks.iter().map(|d| d.write).sum();
-        header(ui, "Disk", &format!("{} physical disks  ·  reading {}  ·  writing {}", s.disks.len(), fmt::rate(total_r), fmt::rate(total_w)));
-        if s.disks.is_empty() {
-            return;
-        }
-        let p = ui.painter().clone();
-        for (i, d) in s.disks.iter().enumerate() {
-            let h = &s.h_disk[i];
-            let (r, _) = ui.allocate_exact_size(vec2(w, 316.0), Sense::hover());
-            widgets::card(&p, r, card());
-            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, &disk_title(d), DISK_COL, r.width() - 36.0);
-            let v = glide(&ctx, egui::Id::new(("disk_v", i)), d.active, 10.0);
-            big(&p, r.min.x + 18.0, r.min.y + 60.0, &format!("{v:.0}%"), &format!("active  ·  {:.1} ms response", d.resp_ms), 30.0);
+        let n = s.disks.len();
+        header(ui, "Disk", &format!("{n} physical disk{}  ·  reading {}  ·  writing {}", if n == 1 { "" } else { "s" }, fmt::rate(total_r), fmt::rate(total_w)));
+        let Some(bi) = busiest_disk(s) else { return };
+        let d = &s.disks[bi];
 
-            // Two labelled panels: active time (0-100%) and throughput (scaled to its own peak)
-            let half = (r.width() - 36.0 - GAP) / 2.0;
-            let pa = Rect::from_min_size(pos2(r.min.x + 18.0, r.min.y + 92.0), vec2(half, r.height() - 92.0 - 16.0));
-            let pb = Rect::from_min_size(pos2(pa.max.x + GAP, pa.min.y), pa.size());
-            for pr in [pa, pb] {
-                p.rect_filled(pr, 8.0, well());
-                p.rect_stroke(pr, 8.0, Stroke::new(1.0_f32, border()));
-            }
-            p.text(pos2(pa.min.x + 12.0, pa.min.y + 16.0), Align2::LEFT_CENTER, "Active time", sb(11.5), txt_dim());
-            p.text(pos2(pa.max.x - 12.0, pa.min.y + 16.0), Align2::RIGHT_CENTER, "100%", reg(10.5), txt_faint());
-            let lx = caption(&p, pb.min.x + 8.0, pb.min.y + 16.0, "Read", IO_COL);
-            caption(&p, lx + 10.0, pb.min.y + 16.0, "Write", WARN_COL);
-            let ga = Rect::from_min_max(pos2(pa.min.x + 1.0, pa.min.y + 30.0), pos2(pa.max.x - 1.0, pa.max.y - 6.0));
-            let gb = Rect::from_min_max(pos2(pb.min.x + 1.0, pb.min.y + 30.0), pos2(pb.max.x - 1.0, pb.max.y - 6.0));
-            let series = [Series { data: &h[0], col: DISK_COL, fill: true, width: 1.6 }];
-            graph::paint(&p, ga, &Graph { series: &series, max: 100.0, scroll, grid: true, hover: hover_in(ui, ga), interval: s.interval, label: &pct_label });
-            let peak = h[1].iter().chain(h[2].iter()).fold(1048576.0_f32, |a, b| a.max(*b)) * 1.15;
-            let peak = glide(&ctx, egui::Id::new(("disk_peak", i)), peak, 4.0);
-            let series = [
-                Series { data: &h[1], col: IO_COL, fill: true, width: 1.5 },
-                Series { data: &h[2], col: WARN_COL, fill: false, width: 1.3 },
-            ];
-            graph::paint(&p, gb, &Graph { series: &series, max: peak, scroll, grid: true, hover: hover_in(ui, gb), interval: s.interval, label: &rate_label });
-            p.text(pos2(pb.max.x - 12.0, pb.min.y + 16.0), Align2::RIGHT_CENTER, fmt::rate(peak as f64), reg(10.5), txt_faint());
+        // the busiest disk's active time, with the others faint behind it
+        let v = glide(&ctx, egui::Id::new("disk_main_v"), d.active, 10.0);
+        let series: Vec<Series> = s
+            .h_disk
+            .iter()
+            .enumerate()
+            .map(|(i, h)| Series { data: &h[0], col: if i == bi { DISK_COL } else { DISK_COL.gamma_multiply(0.4) }, fill: i == bi, width: if i == bi { 1.8 } else { 1.1 } })
+            .collect();
+        let legend: Vec<(&str, Color32)> = if n > 1 { vec![("Busiest", DISK_COL), ("Others", DISK_COL.gamma_multiply(0.4))] } else { vec![] };
+        main_card(ui, w, &format!("Active time  ·  {}", disk_title(d)), DISK_COL, &legend, &format!("{v:.0}%"), &format!("active  ·  {:.1} ms response", d.resp_ms), &series, 100.0, &pct_label, scroll, s.interval);
 
-            ui.add_space(12.0);
-            let mut tiles: Vec<(String, String, Option<Color32>)> = vec![
-                ("Read speed".into(), fmt::rate(d.read), Some(IO_COL)),
-                ("Write speed".into(), fmt::rate(d.write), Some(WARN_COL)),
-                ("Active time".into(), format!("{:.1}%", d.active), Some(DISK_COL)),
-                ("Response time".into(), format!("{:.2} ms", d.resp_ms), None),
-                ("Queue length".into(), format!("{:.0}", d.queue), None),
-            ];
-            for (l, total, free) in &d.volumes {
-                tiles.push((format!("{l} used"), format!("{} / {}", fmt::bytes(total - free), fmt::bytes(*total)), None));
-            }
-            let o = ui.cursor().min;
-            let (rects, th) = widgets::tile_grid(o, w, tiles.len(), 170.0, 64.0, 12.0);
-            ui.allocate_exact_size(vec2(w, th), Sense::hover());
-            for (tr, (c, v, dcol)) in rects.iter().zip(&tiles) {
-                widgets::tile(&p, *tr, c, v, *dcol);
-            }
-            ui.add_space(GAP + 8.0);
-        }
+        let space = d.volumes.first().map(|(l, total, free)| t(&format!("{l} free"), format!("{} of {}", fmt::bytes(*free), fmt::bytes(*total)), None));
+        let mut tiles = vec![
+            t("Reading", fmt::rate(total_r), Some(IO_COL)),
+            t("Writing", fmt::rate(total_w), Some(WARN_COL)),
+            t("Active time", format!("{:.1}%", d.active), Some(DISK_COL)),
+            t("Response time", format!("{:.2} ms", d.resp_ms), None),
+        ];
+        tiles.push(space.unwrap_or_else(|| t("Queue length", format!("{:.0}", d.queue), None)));
+        key_tiles(ui, w, &tiles);
 
-        // Which programs are using the disk
+        let groups = grouped(s);
         if s.disk_trace {
-            let groups = grouped(s);
             let mut by: Vec<&Group> = groups.iter().filter(|g| g.disk_r + g.disk_w > 0.0).collect();
             by.sort_by(|a, b| (b.disk_r + b.disk_w).total_cmp(&(a.disk_r + a.disk_w)));
-            let rows: Vec<(&Group, f32, String)> = by
-                .iter()
-                .take(10)
-                .map(|g| (*g, (g.disk_r + g.disk_w) as f32, format!("R {}  ·  W {}", fmt::rate(g.disk_r), fmt::rate(g.disk_w))))
-                .collect();
-            let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
-            top_list_w(ui, r, "Programs using the disk (physical I/O)", DISK_COL, &rows, 170.0);
+            let rows: Vec<(&Group, f32, String)> =
+                by.iter().map(|g| (*g, (g.disk_r + g.disk_w) as f32, format!("R {}  ·  W {}", fmt::rate(g.disk_r), fmt::rate(g.disk_w)))).collect();
             let (or, ow) = s.disk_orphan;
-            if or + ow > 0.0 {
-                // I/O whose thread exited before we could name its process: shown so the sum adds up
-                let t = format!("+ {} from programs that already exited", fmt::rate(or + ow));
-                widgets::fit(&p, pos2(r.max.x - 18.0, r.min.y + 24.0), Align2::RIGHT_CENTER, &t, reg(11.0), r.width() * 0.4, txt_faint());
-            }
-            if rows.is_empty() {
-                p.text(pos2(r.min.x + 18.0, r.min.y + 60.0), Align2::LEFT_CENTER, "No disk activity in the last update", reg(12.5), txt_faint());
-            }
+            // I/O whose thread exited before we could name its process: shown so the sum adds up
+            let note = if or + ow > 0.0 { format!("+ {} from programs that already exited", fmt::rate(or + ow)) } else { "Click a program to see what it's doing".into() };
+            who_card(ui, w, "Who's using the disk", DISK_COL, &note, &rows, 170.0, "No disk activity in the last update");
         } else {
-            let (r, _) = ui.allocate_exact_size(vec2(w, 74.0), Sense::hover());
-            widgets::card(&p, r, card());
-            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, "Which programs are using the disk", DISK_COL, r.width() - 36.0);
-            widgets::fit(
-                &p,
-                pos2(r.min.x + 18.0, r.min.y + 50.0),
-                Align2::LEFT_CENTER,
-                "Click Elevate (bottom left) to see per-program physical reads, writes and response time.",
-                reg(12.0),
-                r.width() - 36.0,
-                txt_faint(),
-            );
+            // without administrator: all I/O (disk, network and devices together), still useful
+            let mut by: Vec<&Group> = groups.iter().filter(|g| g.io >= 1.0).collect();
+            by.sort_by(|a, b| b.io.total_cmp(&a.io));
+            let rows: Vec<(&Group, f32, String)> = by.iter().map(|g| (*g, g.io as f32, fmt::rate(g.io))).collect();
+            who_card(ui, w, "Who's moving data", DISK_COL, "Disk, network and devices together. Elevate to see disk alone", &rows, 110.0, "Nothing is moving data right now");
         }
-        ui.add_space(GAP);
+
+        if more(ui, w, "disk", &format!("Each disk's activity, read and write speed, and free space ({n})")) {
+            let p = ui.painter().clone();
+            for (i, d) in s.disks.iter().enumerate() {
+                let h = &s.h_disk[i];
+                let (r, _) = ui.allocate_exact_size(vec2(w, 260.0), Sense::hover());
+                widgets::card(&p, r, card());
+                caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, &disk_title(d), DISK_COL, r.width() - 36.0);
+                // Two labelled panels: active time (0-100%) and throughput (scaled to its own peak)
+                let half = (r.width() - 36.0 - GAP) / 2.0;
+                let pa = Rect::from_min_size(pos2(r.min.x + 18.0, r.min.y + 44.0), vec2(half, r.height() - 44.0 - 16.0));
+                let pb = Rect::from_min_size(pos2(pa.max.x + GAP, pa.min.y), pa.size());
+                let ga = well_panel(&p, pa, "Active time", DISK_COL, "100%");
+                p.rect_filled(pb, 8.0, well());
+                p.rect_stroke(pb, 8.0, Stroke::new(1.0_f32, border()));
+                let lx = caption(&p, pb.min.x + 8.0, pb.min.y + 16.0, "Read", IO_COL);
+                caption(&p, lx + 10.0, pb.min.y + 16.0, "Write", WARN_COL);
+                let gb = Rect::from_min_max(pos2(pb.min.x + 1.0, pb.min.y + 30.0), pos2(pb.max.x - 1.0, pb.max.y - 6.0));
+                let series = [Series { data: &h[0], col: DISK_COL, fill: true, width: 1.6 }];
+                graph::paint(&p, ga, &Graph { series: &series, max: 100.0, scroll, grid: true, hover: hover_in(ui, ga), interval: s.interval, label: &pct_label });
+                let peak = h[1].iter().chain(h[2].iter()).fold(1048576.0_f32, |a, b| a.max(*b)) * 1.15;
+                let peak = glide(&ctx, egui::Id::new(("disk_peak", i)), peak, 4.0);
+                let series = [
+                    Series { data: &h[1], col: IO_COL, fill: true, width: 1.5 },
+                    Series { data: &h[2], col: WARN_COL, fill: false, width: 1.3 },
+                ];
+                graph::paint(&p, gb, &Graph { series: &series, max: peak, scroll, grid: true, hover: hover_in(ui, gb), interval: s.interval, label: &rate_label });
+                p.text(pos2(pb.max.x - 12.0, pb.min.y + 16.0), Align2::RIGHT_CENTER, fmt::rate(peak as f64), reg(10.5), txt_faint());
+                ui.add_space(12.0);
+                let mut tiles = vec![
+                    t("Read speed", fmt::rate(d.read), Some(IO_COL)),
+                    t("Write speed", fmt::rate(d.write), Some(WARN_COL)),
+                    t("Active time", format!("{:.1}%", d.active), Some(DISK_COL)),
+                    t("Response time", format!("{:.2} ms", d.resp_ms), None),
+                    t("Queue length", format!("{:.0}", d.queue), None),
+                ];
+                for (l, total, free) in &d.volumes {
+                    tiles.push(t(&format!("{l} used"), format!("{} / {}", fmt::bytes(total - free), fmt::bytes(*total)), None));
+                }
+                tile_row(ui, w, &tiles);
+                ui.add_space(GAP + 8.0);
+            }
+        }
     });
     None
 }
@@ -805,6 +912,18 @@ fn net_label(v: &[f32]) -> String {
     }
 }
 
+/// "Ethernet 2 (Wi-Fi) · Realtek ...": the adapter type added when the name doesn't say it
+fn adapter_title(a: &crate::sys::net::Adapter) -> String {
+    let mut title = a.name.clone();
+    if !a.name.to_lowercase().contains(&a.kind.to_lowercase()) && a.kind != "Network" {
+        title += &format!(" ({})", a.kind);
+    }
+    if !a.desc.is_empty() && a.desc != a.name {
+        title += &format!("  ·  {}", a.desc);
+    }
+    title
+}
+
 pub fn network(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         // the page reaches the window's edge so the scroll bar sits there; the content keeps its margin
@@ -815,136 +934,106 @@ pub fn network(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         let down: f64 = s.nets.iter().map(|a| a.rx).sum();
         let up: f64 = s.nets.iter().map(|a| a.tx).sum();
         let n = s.nets.len();
-        header(
+        header(ui, "Network", &format!("{n} connected adapter{}  ·  down {}  ·  up {}", if n == 1 { "" } else { "s" }, fmt::bits(down), fmt::bits(up)));
+
+        // every adapter together: download and upload, scaled to the recent peak (at least 1 Mbps)
+        let len = s.h_net.iter().map(|h| h[0].len()).max().unwrap_or(0);
+        let sum = |k: usize| -> Vec<f32> {
+            let mut v = vec![0.0; len];
+            for h in &s.h_net {
+                let off = len - h[k].len();
+                for (i, x) in h[k].iter().enumerate() {
+                    v[off + i] += x;
+                }
+            }
+            v
+        };
+        let (h_down, h_up) = (sum(0), sum(1));
+        let peak = h_down.iter().chain(h_up.iter()).fold(125_000.0_f32, |m, b| m.max(*b)) * 1.15;
+        let peak = glide(&ctx, egui::Id::new("net_main_peak"), peak, 4.0);
+        let v = glide(&ctx, egui::Id::new("net_main_v"), down as f32, 10.0);
+        let series = [
+            Series { data: &h_down, col: NET_COL, fill: true, width: 1.8 },
+            Series { data: &h_up, col: NET_UP_COL, fill: false, width: 1.3 },
+        ];
+        let title = if n == 1 { adapter_title(&s.nets[0]) } else if n == 0 { "No connected adapters".into() } else { format!("All {n} adapters") };
+        main_card(ui, w, &title, NET_COL, &[("Download", NET_COL), ("Upload", NET_UP_COL)], &fmt::bits(v as f64), &format!("down  ·  {} up", fmt::bits(up)), &series, peak, &net_label, scroll, s.interval);
+
+        let link = s.nets.first().map_or_else(|| "—".into(), |a| if a.link_rx == a.link_tx || a.link_tx == 0 { fmt::link(a.link_rx) } else { format!("{} ↓  ·  {} ↑", fmt::link(a.link_rx), fmt::link(a.link_tx)) });
+        key_tiles(
             ui,
-            "Network",
-            &format!("{n} connected adapter{}  ·  down {}  ·  up {}", if n == 1 { "" } else { "s" }, fmt::bits(down), fmt::bits(up)),
+            w,
+            &[
+                t("Download", fmt::bits(down), Some(NET_COL)),
+                t("Upload", fmt::bits(up), Some(NET_UP_COL)),
+                t("Received since start", fmt::bytes(s.nets.iter().map(|a| a.rx_total).sum()), None),
+                t("Sent since start", fmt::bytes(s.nets.iter().map(|a| a.tx_total).sum()), None),
+                t("Link speed", link, None),
+            ],
         );
-        let p = ui.painter().clone();
-        if s.nets.is_empty() {
-            let (r, _) = ui.allocate_exact_size(vec2(w, 74.0), Sense::hover());
-            widgets::card(&p, r, card());
-            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, "No connected network adapters", NET_COL, r.width() - 36.0);
-            widgets::fit(
-                &p,
-                pos2(r.min.x + 18.0, r.min.y + 50.0),
-                Align2::LEFT_CENTER,
-                "Plug in a cable or join a Wi-Fi network and it shows up here.",
-                reg(12.0),
-                r.width() - 36.0,
-                txt_faint(),
-            );
-            ui.add_space(GAP);
-        }
-        for (i, a) in s.nets.iter().enumerate() {
-            let h = &s.h_net[i];
-            let (r, _) = ui.allocate_exact_size(vec2(w, 290.0), Sense::hover());
-            widgets::card(&p, r, card());
-            // "Ethernet 2 · Realtek ...", with the adapter type added when the name doesn't say it
-            let mut title = a.name.clone();
-            if !a.name.to_lowercase().contains(&a.kind.to_lowercase()) && a.kind != "Network" {
-                title += &format!(" ({})", a.kind);
-            }
-            if !a.desc.is_empty() && a.desc != a.name {
-                title += &format!("  ·  {}", a.desc);
-            }
-            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, &title, NET_COL, r.width() - 36.0);
-            let v = glide(&ctx, egui::Id::new(("net_v", a.luid)), a.rx as f32, 10.0);
-            big(&p, r.min.x + 18.0, r.min.y + 60.0, &fmt::bits(v as f64), &format!("down  ·  {} up", fmt::bits(a.tx)), 30.0);
-
-            // Download and upload on one graph, scaled to the recent peak (at least 1 Mbps)
-            let pr = Rect::from_min_size(pos2(r.min.x + 18.0, r.min.y + 92.0), vec2(r.width() - 36.0, r.height() - 92.0 - 16.0));
-            p.rect_filled(pr, 8.0, well());
-            p.rect_stroke(pr, 8.0, Stroke::new(1.0_f32, border()));
-            let lx = caption(&p, pr.min.x + 8.0, pr.min.y + 16.0, "Download", NET_COL);
-            caption(&p, lx + 10.0, pr.min.y + 16.0, "Upload", NET_UP_COL);
-            let g = Rect::from_min_max(pos2(pr.min.x + 1.0, pr.min.y + 30.0), pos2(pr.max.x - 1.0, pr.max.y - 6.0));
-            let peak = h[0].iter().chain(h[1].iter()).fold(125_000.0_f32, |m, b| m.max(*b)) * 1.15;
-            let peak = glide(&ctx, egui::Id::new(("net_peak", a.luid)), peak, 4.0);
-            let series = [
-                Series { data: &h[0], col: NET_COL, fill: true, width: 1.5 },
-                Series { data: &h[1], col: NET_UP_COL, fill: false, width: 1.3 },
-            ];
-            graph::paint(&p, g, &Graph { series: &series, max: peak, scroll, grid: true, hover: hover_in(ui, g), interval: s.interval, label: &net_label });
-            p.text(pos2(pr.max.x - 12.0, pr.min.y + 16.0), Align2::RIGHT_CENTER, fmt::bits(peak as f64), reg(10.5), txt_faint());
-
-            ui.add_space(12.0);
-            let link = if a.link_rx == a.link_tx || a.link_tx == 0 {
-                fmt::link(a.link_rx)
-            } else {
-                format!("{} ↓  ·  {} ↑", fmt::link(a.link_rx), fmt::link(a.link_tx))
-            };
-            let tiles: [(&str, String, Option<Color32>); 5] = [
-                ("Download", fmt::bits(a.rx), Some(NET_COL)),
-                ("Upload", fmt::bits(a.tx), Some(NET_UP_COL)),
-                ("Received since start", fmt::bytes(a.rx_total), None),
-                ("Sent since start", fmt::bytes(a.tx_total), None),
-                ("Link speed", link, None),
-            ];
-            let o = ui.cursor().min;
-            let (rects, th) = widgets::tile_grid(o, w, tiles.len(), 170.0, 64.0, 12.0);
-            ui.allocate_exact_size(vec2(w, th), Sense::hover());
-            for (tr, (c, v, dcol)) in rects.iter().zip(&tiles) {
-                widgets::tile(&p, *tr, c, v, *dcol);
-            }
-            ui.add_space(GAP + 8.0);
-        }
 
         let groups = grouped(s);
-        // Which programs are using the network (kernel trace, administrator only)
         if s.net_trace {
             let mut by: Vec<&Group> = groups.iter().filter(|g| g.net_rx + g.net_tx > 0.0).collect();
             by.sort_by(|a, b| (b.net_rx + b.net_tx).total_cmp(&(a.net_rx + a.net_tx)));
+            let rows: Vec<(&Group, f32, String)> = by.iter().map(|g| (*g, (g.net_rx + g.net_tx) as f32, format!("↓ {}  ·  ↑ {}", fmt::bits(g.net_rx), fmt::bits(g.net_tx)))).collect();
+            who_card(ui, w, "Who's using the network", NET_COL, "≈ Windows' estimate per program", &rows, 190.0, "No network traffic in the last update");
+        } else {
+            let mut by: Vec<&Group> = groups.iter().filter(|g| g.conns.tcp > 0).collect();
+            by.sort_by(|a, b| b.conns.tcp.cmp(&a.conns.tcp));
+            let rows: Vec<(&Group, f32, String)> = by.iter().map(|g| (*g, g.conns.tcp as f32, format!("{} connected", g.conns.tcp))).collect();
+            who_card(ui, w, "Who's connected", NET_COL, "Elevate to see download and upload speed per program", &rows, 130.0, "No open connections");
+        }
+
+        if more(ui, w, "net", &format!("Each adapter ({n}) and every program's open connections")) {
+            let p = ui.painter().clone();
+            for (i, a) in s.nets.iter().enumerate() {
+                let h = &s.h_net[i];
+                let (r, _) = ui.allocate_exact_size(vec2(w, 220.0), Sense::hover());
+                widgets::card(&p, r, card());
+                caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, &adapter_title(a), NET_COL, r.width() - 36.0);
+                let pr = Rect::from_min_size(pos2(r.min.x + 18.0, r.min.y + 44.0), vec2(r.width() - 36.0, r.height() - 44.0 - 16.0));
+                let peak = h[0].iter().chain(h[1].iter()).fold(125_000.0_f32, |m, b| m.max(*b)) * 1.15;
+                let peak = glide(&ctx, egui::Id::new(("net_peak", a.luid)), peak, 4.0);
+                p.rect_filled(pr, 8.0, well());
+                p.rect_stroke(pr, 8.0, Stroke::new(1.0_f32, border()));
+                let lx = caption(&p, pr.min.x + 8.0, pr.min.y + 16.0, &format!("Download {}", fmt::bits(a.rx)), NET_COL);
+                caption(&p, lx + 10.0, pr.min.y + 16.0, &format!("Upload {}", fmt::bits(a.tx)), NET_UP_COL);
+                p.text(pos2(pr.max.x - 12.0, pr.min.y + 16.0), Align2::RIGHT_CENTER, fmt::bits(peak as f64), reg(10.5), txt_faint());
+                let g = Rect::from_min_max(pos2(pr.min.x + 1.0, pr.min.y + 30.0), pos2(pr.max.x - 1.0, pr.max.y - 6.0));
+                let series = [
+                    Series { data: &h[0], col: NET_COL, fill: true, width: 1.5 },
+                    Series { data: &h[1], col: NET_UP_COL, fill: false, width: 1.3 },
+                ];
+                graph::paint(&p, g, &Graph { series: &series, max: peak, scroll, grid: true, hover: hover_in(ui, g), interval: s.interval, label: &net_label });
+                ui.add_space(GAP);
+            }
+
+            // Open connections: available without administrator
+            let mut by: Vec<&Group> = groups.iter().filter(|g| g.conns.total() > 0).collect();
+            by.sort_by(|a, b| b.conns.tcp.cmp(&a.conns.tcp).then(b.conns.total().cmp(&a.conns.total())));
             let rows: Vec<(&Group, f32, String)> = by
                 .iter()
                 .take(10)
-                .map(|g| (*g, (g.net_rx + g.net_tx) as f32, format!("↓ {}  ·  ↑ {}", fmt::bits(g.net_rx), fmt::bits(g.net_tx))))
+                .map(|g| {
+                    let c = g.conns;
+                    let mut t = format!("{} connected", c.tcp);
+                    if c.listen > 0 {
+                        t += &format!("  ·  {} listening", c.listen);
+                    }
+                    if c.udp > 0 {
+                        t += &format!("  ·  {} UDP", c.udp);
+                    }
+                    (*g, c.total() as f32, t)
+                })
                 .collect();
             let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
-            top_list_w(ui, r, "Programs using the network", NET_COL, &rows, 190.0);
+            top_list_w(ui, r, "Open connections", NET_UP_COL, &rows, 250.0);
             if rows.is_empty() {
-                p.text(pos2(r.min.x + 18.0, r.min.y + 60.0), Align2::LEFT_CENTER, "No network traffic in the last update", reg(12.5), txt_faint());
+                p.text(pos2(r.min.x + 18.0, r.min.y + 60.0), Align2::LEFT_CENTER, "No open connections", reg(12.5), txt_faint());
             }
-        } else {
-            let (r, _) = ui.allocate_exact_size(vec2(w, 74.0), Sense::hover());
-            widgets::card(&p, r, card());
-            caption_w(&p, r.min.x + 18.0, r.min.y + 24.0, "Which programs are using the network", NET_COL, r.width() - 36.0);
-            widgets::fit(
-                &p,
-                pos2(r.min.x + 18.0, r.min.y + 50.0),
-                Align2::LEFT_CENTER,
-                "Click Elevate (bottom left) to see download and upload speed per program.",
-                reg(12.0),
-                r.width() - 36.0,
-                txt_faint(),
-            );
+            ui.add_space(GAP);
         }
-        ui.add_space(GAP);
-
-        // Open connections: available without administrator
-        let mut by: Vec<&Group> = groups.iter().filter(|g| g.conns.total() > 0).collect();
-        by.sort_by(|a, b| b.conns.tcp.cmp(&a.conns.tcp).then(b.conns.total().cmp(&a.conns.total())));
-        let rows: Vec<(&Group, f32, String)> = by
-            .iter()
-            .take(10)
-            .map(|g| {
-                let c = g.conns;
-                let mut t = format!("{} connected", c.tcp);
-                if c.listen > 0 {
-                    t += &format!("  ·  {} listening", c.listen);
-                }
-                if c.udp > 0 {
-                    t += &format!("  ·  {} UDP", c.udp);
-                }
-                (*g, c.total() as f32, t)
-            })
-            .collect();
-        let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
-        top_list_w(ui, r, "Open connections", NET_UP_COL, &rows, 250.0);
-        if rows.is_empty() {
-            p.text(pos2(r.min.x + 18.0, r.min.y + 60.0), Align2::LEFT_CENTER, "No open connections", reg(12.5), txt_faint());
-        }
-        ui.add_space(GAP);
     });
     None
 }
@@ -995,7 +1084,7 @@ pub fn gpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         } else {
             format!("{vendor}  ·  {} dedicated memory", fmt::bytes(g.dedicated_total))
         };
-        header(ui, &g.name, &sub);
+        header(ui, "GPU", &format!("{}  ·  {sub}", g.name));
         if s.gpus.len() > 1 {
             // Adapter picker in the header's right corner
             let names: Vec<String> = (0..s.gpus.len()).map(|i| format!("GPU {i}")).collect();
@@ -1008,12 +1097,6 @@ pub fn gpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
         }
         let g = &s.gpus[sel];
 
-        let (r, _) = ui.allocate_exact_size(vec2(w, 280.0), Sense::hover());
-        let p = ui.painter().clone();
-        widgets::card(&p, r, card());
-        caption(&p, r.min.x + 18.0, r.min.y + 24.0, "Utilization", GPU_COL);
-        let x = caption(&p, r.max.x - 230.0, r.min.y + 24.0, "Usage", GPU_COL);
-        caption(&p, x + 14.0, r.min.y + 24.0, "Dedicated memory", VRAM_COL);
         let v = glide(&ctx, egui::Id::new(("gpu_v", sel)), g.util, 10.0);
         let busiest = g
             .engines
@@ -1022,77 +1105,87 @@ pub fn gpu(ui: &mut Ui, s: &Snapshot, scroll: f32) -> Option<Page> {
             .filter(|e| e.util >= 0.5)
             .map(|e| format!("busiest: {}", engine_name(&e.kind)))
             .unwrap_or_default();
-        big(&p, r.min.x + 18.0, r.min.y + 60.0, &format!("{v:.1}%"), &busiest, 30.0);
-        let gr = Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 90.0), pos2(r.max.x - 1.0, r.max.y - 12.0));
         let series = [
             Series { data: &s.h_gpu[sel], col: GPU_COL, fill: true, width: 1.8 },
             Series { data: &s.h_vram[sel], col: VRAM_COL, fill: false, width: 1.2 },
         ];
-        graph::paint(&p, gr, &Graph { series: &series, max: 100.0, scroll, grid: true, hover: hover_in(ui, gr), interval: s.interval, label: &pct_label });
+        main_card(ui, w, "Utilization", GPU_COL, &[("Usage", GPU_COL), ("Dedicated memory", VRAM_COL)], &format!("{v:.1}%"), &busiest, &series, 100.0, &pct_label, scroll, s.interval);
 
-        // Engines
-        ui.add_space(GAP);
-        section(ui, "Engines");
-        let engines: Vec<&crate::sys::gpu::Engine> = g
-            .engines
-            .iter()
-            .filter(|e| matches!(e.kind.as_str(), "3D" | "Copy" | "VideoDecode" | "VideoEncode") || e.kind.starts_with("Compute") || e.util >= 0.5)
-            .collect();
-        let o = ui.cursor().min;
-        let (rects, h) = widgets::tile_grid(o, w, engines.len(), 170.0, 64.0, 12.0);
-        ui.allocate_exact_size(vec2(w, h), Sense::hover());
-        for (r, e) in rects.iter().zip(&engines) {
-            p.rect_filled(*r, 10.0, card());
-            p.rect_stroke(*r, 10.0, Stroke::new(1.0_f32, border()));
-            p.text(pos2(r.min.x + 14.0, r.min.y + 20.0), Align2::LEFT_CENTER, engine_name(&e.kind), reg(12.0), txt_faint());
-            p.text(pos2(r.max.x - 14.0, r.min.y + 20.0), Align2::RIGHT_CENTER, format!("{:.0}%", e.util), sb(13.0), mix(txt_dim(), hi(), e.util / 100.0));
-            let br = Rect::from_min_max(pos2(r.min.x + 14.0, r.max.y - 20.0), pos2(r.max.x - 14.0, r.max.y - 15.0));
-            let f = glide(&ctx, egui::Id::new(("eng", sel, e.kind.as_str())), e.util / 100.0, 10.0);
-            widgets::meter(&p, br, f, GPU_COL);
-        }
-
-        // Memory and sensors
-        ui.add_space(GAP);
-        section(ui, "Memory and sensors");
         let n = &g.sensors;
-        let mut tiles: Vec<(&str, String, Option<Color32>)> = vec![
-            ("Dedicated memory", format!("{} / {}", fmt::bytes(g.dedicated_used), fmt::bytes(g.dedicated_total)), Some(VRAM_COL)),
-            ("Shared memory", format!("{} / {}", fmt::bytes(g.shared_used), fmt::bytes(g.shared_total)), None),
-        ];
-        if let Some(t) = n.temp {
-            tiles.push(("Temperature", format!("{t:.0} °C"), Some(temp_col(t))));
-        }
-        if let Some(c) = n.core_mhz {
-            tiles.push(("Core clock", format!("{c} MHz"), None));
-        }
-        if let Some(c) = n.mem_mhz {
-            tiles.push(("Memory clock", format!("{c} MHz"), None));
-        }
-        if let Some(pw) = n.power_w {
-            let lim = n.power_limit_w.map(|l| format!(" / {l:.0} W")).unwrap_or_default();
-            tiles.push(("Power", format!("{pw:.0} W{lim}"), None));
-        }
-        if let Some(f) = n.fan_pct {
-            tiles.push(("Fan", if f == 0 { "Stopped (0 %)".into() } else { format!("{f} %") }, None));
-        }
-        let o = ui.cursor().min;
-        let (rects, h) = widgets::tile_grid(o, w, tiles.len(), 170.0, 64.0, 12.0);
-        ui.allocate_exact_size(vec2(w, h), Sense::hover());
-        for (r, (c, v, d)) in rects.iter().zip(&tiles) {
-            widgets::tile(&p, *r, c, v, *d);
-        }
-        if n.temp.is_none() && g.vendor == 0x10de {
-            section(ui, "Temperature, clocks and power need the NVIDIA driver's NVML library");
-        }
+        let dash = || "—".to_string();
+        key_tiles(
+            ui,
+            w,
+            &[
+                t("Utilization", format!("{:.1}%", g.util), Some(GPU_COL)),
+                t("Dedicated memory", format!("{} / {}", fmt::bytes(g.dedicated_used), fmt::bytes(g.dedicated_total)), Some(VRAM_COL)),
+                t("Shared memory", fmt::bytes(g.shared_used), None),
+                match n.temp {
+                    Some(tc) => t("Temperature", format!("{tc:.0} °C"), Some(temp_col(tc))),
+                    None => t("Temperature", dash(), None),
+                },
+                t("Power", n.power_w.map_or_else(dash, |pw| format!("{pw:.0} W")), None),
+            ],
+        );
 
-        ui.add_space(GAP);
+        // per-program GPU figures are Windows' estimates
         let groups = grouped(s);
-        let mut by: Vec<&Group> = groups.iter().filter(|g| g.vram > 0).collect();
-        by.sort_by(|a, b| b.vram.cmp(&a.vram));
-        let rows: Vec<(&Group, f32, String)> = by.iter().take(10).map(|g| (*g, g.vram as f32, fmt::bytes(g.vram))).collect();
-        let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len() as f32 * 30.0), Sense::hover());
-        top_list(ui, r, "Biggest VRAM users (dedicated GPU memory, grouped by name)", VRAM_COL, &rows);
-        ui.add_space(GAP);
+        let mut by: Vec<&Group> = if s.gpu_proc { groups.iter().filter(|g| g.gpu >= 0.1 || g.vram >= 64 << 20).collect() } else { Vec::new() };
+        by.sort_by(|a, b| b.gpu.total_cmp(&a.gpu).then(b.vram.cmp(&a.vram)));
+        let rows: Vec<(&Group, f32, String)> = by.iter().map(|g| (*g, g.gpu, format!("≈ {:.0}%  ·  {} VRAM", g.gpu, fmt::bytes(g.vram)))).collect();
+        let empty = if s.gpu_proc { "Nothing is using the GPU right now" } else { "Windows doesn't report GPU use per program on this PC" };
+        who_card(ui, w, "Who's using the GPU", GPU_COL, "≈ Windows' estimate per program", &rows, 170.0, empty);
+
+        if more(ui, w, "gpu", "Engines, clocks, fan, and who holds the most video memory") {
+            let p = ui.painter().clone();
+            section(ui, "Engines");
+            let engines: Vec<&crate::sys::gpu::Engine> = g
+                .engines
+                .iter()
+                .filter(|e| matches!(e.kind.as_str(), "3D" | "Copy" | "VideoDecode" | "VideoEncode") || e.kind.starts_with("Compute") || e.util >= 0.5)
+                .collect();
+            let o = ui.cursor().min;
+            let (rects, h) = widgets::tile_grid(o, w, engines.len(), 170.0, 64.0, 12.0);
+            ui.allocate_exact_size(vec2(w, h), Sense::hover());
+            for (r, e) in rects.iter().zip(&engines) {
+                p.rect_filled(*r, 10.0, card());
+                p.rect_stroke(*r, 10.0, Stroke::new(1.0_f32, border()));
+                p.text(pos2(r.min.x + 14.0, r.min.y + 20.0), Align2::LEFT_CENTER, engine_name(&e.kind), reg(12.0), txt_faint());
+                p.text(pos2(r.max.x - 14.0, r.min.y + 20.0), Align2::RIGHT_CENTER, format!("{:.0}%", e.util), sb(13.0), mix(txt_dim(), hi(), e.util / 100.0));
+                let br = Rect::from_min_max(pos2(r.min.x + 14.0, r.max.y - 20.0), pos2(r.max.x - 14.0, r.max.y - 15.0));
+                let f = glide(&ctx, egui::Id::new(("eng", sel, e.kind.as_str())), e.util / 100.0, 10.0);
+                widgets::meter(&p, br, f, GPU_COL);
+            }
+
+            ui.add_space(GAP);
+            section(ui, "Clocks and sensors");
+            let mut tiles = vec![t("Shared memory", format!("{} / {}", fmt::bytes(g.shared_used), fmt::bytes(g.shared_total)), None)];
+            if let Some(c) = n.core_mhz {
+                tiles.push(t("Core clock", format!("{c} MHz"), None));
+            }
+            if let Some(c) = n.mem_mhz {
+                tiles.push(t("Memory clock", format!("{c} MHz"), None));
+            }
+            if let Some(pw) = n.power_w {
+                let lim = n.power_limit_w.map(|l| format!(" / {l:.0} W")).unwrap_or_default();
+                tiles.push(t("Power", format!("{pw:.0} W{lim}"), None));
+            }
+            if let Some(f) = n.fan_pct {
+                tiles.push(t("Fan", if f == 0 { "Stopped (0 %)".into() } else { format!("{f} %") }, None));
+            }
+            tile_row(ui, w, &tiles);
+            if n.temp.is_none() && g.vendor == 0x10de {
+                section(ui, "Temperature, clocks and power need the NVIDIA driver's NVML library");
+            }
+
+            ui.add_space(GAP);
+            let mut by: Vec<&Group> = groups.iter().filter(|g| g.vram > 0).collect();
+            by.sort_by(|a, b| b.vram.cmp(&a.vram));
+            let rows: Vec<(&Group, f32, String)> = by.iter().take(10).map(|g| (*g, g.vram as f32, fmt::bytes(g.vram))).collect();
+            let (r, _) = ui.allocate_exact_size(vec2(w, 60.0 + rows.len().max(1) as f32 * 30.0), Sense::hover());
+            top_list(ui, r, "Most video memory", VRAM_COL, &rows);
+            ui.add_space(GAP);
+        }
     });
     None
 }

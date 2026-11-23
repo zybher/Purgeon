@@ -2,6 +2,7 @@
 //! of calls (one NtQuerySystemInformation for all processes) and publishes an immutable
 //! `Snapshot` the UI picks up.
 
+pub mod audio;
 pub mod clock;
 pub mod disk;
 pub mod etw;
@@ -9,6 +10,7 @@ pub mod gpu;
 pub mod net;
 mod pdh;
 pub mod ping;
+pub mod procinfo;
 pub mod thermal;
 pub mod win;
 #[cfg(feature = "bench")]
@@ -23,10 +25,13 @@ use std::time::{Duration, Instant};
 pub const HIST: usize = 120;
 
 #[derive(Clone, Default)]
-#[allow(dead_code)] // ppid / session feed the upcoming tree view
 pub struct Proc {
     pub pid: u32,
+    /// The process that started this one. Windows reuses ids, so check `created` against the
+    /// parent's before trusting it (see `parent_of`).
     pub ppid: u32,
+    /// When it started: 100 ns ticks since 1601 (UTC), as Windows keeps it
+    pub created: i64,
     pub name: String,
     /// Executable path, when Windows lets us read it (shared between processes of the same exe)
     pub path: Option<Arc<str>>,
@@ -44,6 +49,8 @@ pub struct Proc {
     pub session: u32,
     /// Busiest GPU engine this process uses, 0..100
     pub gpu: f32,
+    /// The kind of that engine ("3D", "Copy", "VideoDecode", "VideoEncode", "Compute", "Other")
+    pub gpu_engine: &'static str,
     /// Dedicated GPU memory (VRAM) and shared GPU memory
     pub vram: u64,
     pub gpu_shared: u64,
@@ -60,6 +67,11 @@ pub struct Proc {
 }
 
 impl Proc {
+    /// RAM in use as the Memory column counts it: private plus shared
+    pub fn ram(&self) -> u64 {
+        self.private_ws + self.shared()
+    }
+
     /// RAM this process shares with others (DLLs, mapped files, shared memory): the part of its
     /// working set that is not private
     pub fn shared(&self) -> u64 {
@@ -376,6 +388,7 @@ impl Collector {
             for p in procs.iter_mut() {
                 if let Some(g) = pg.get(&p.pid) {
                     p.gpu = g.util;
+                    p.gpu_engine = g.engine;
                     p.vram = g.dedicated;
                     p.gpu_shared = g.shared;
                 }
@@ -461,6 +474,8 @@ impl Collector {
         for (h, v) in self.h_cores.iter_mut().zip(&cores) {
             push(h, *v);
         }
+
+        record_history(&procs, self.trace.is_some());
 
         self.seq += 1;
         Snapshot {
@@ -572,6 +587,7 @@ impl Collector {
                 out.push(Proc {
                     pid,
                     ppid: p.InheritedFromUniqueProcessId as u32,
+                    created: p.CreateTime,
                     name,
                     path,
                     cpu: cpu.clamp(0.0, 100.0),
@@ -617,6 +633,74 @@ impl Collector {
         }
         out
     }
+}
+
+/// What each process's small graphs in the details panel show, in this order
+pub const PH_CPU: usize = 0;
+pub const PH_RAM: usize = 1;
+pub const PH_DISK: usize = 2;
+pub const PH_GPU: usize = 3;
+pub const PH_NET: usize = 4;
+/// Samples kept per process (a minute at the default speed)
+const PROC_HIST: usize = 60;
+
+type ProcHist = (i64, [VecDeque<f32>; 5]);
+
+fn proc_hist() -> &'static Mutex<HashMap<u32, ProcHist>> {
+    static H: std::sync::OnceLock<Mutex<HashMap<u32, ProcHist>>> = std::sync::OnceLock::new();
+    H.get_or_init(Default::default)
+}
+
+/// Keeps the last minute of every process's CPU, RAM, disk, GPU and network use, so its
+/// details already have graphs the moment they open. ~350 KB for 300 processes.
+fn record_history(procs: &[Proc], disk_trace: bool) {
+    let Ok(mut m) = proc_hist().lock() else { return };
+    for p in procs {
+        let e = m.entry(p.pid).or_insert_with(|| (p.created, Default::default()));
+        if e.0 != p.created {
+            // the id was reused by a new process
+            *e = (p.created, Default::default());
+        }
+        let disk = if disk_trace { p.disk_read + p.disk_write } else { p.io_read + p.io_write };
+        // RAM: memory only this process uses (shared memory would be counted again for each copy)
+        let vals = [p.cpu, p.private_ws as f32, disk as f32, p.gpu, (p.net_rx + p.net_tx) as f32];
+        for (h, v) in e.1.iter_mut().zip(vals) {
+            if h.len() >= PROC_HIST {
+                h.pop_front();
+            }
+            h.push_back(v);
+        }
+    }
+    let live: std::collections::HashSet<u32> = procs.iter().map(|p| p.pid).collect();
+    m.retain(|pid, _| live.contains(pid));
+}
+
+/// The recent history of these processes added together, aligned on the newest sample
+pub fn history(pids: &[u32]) -> [Vec<f32>; 5] {
+    let mut out: [Vec<f32>; 5] = Default::default();
+    let Ok(m) = proc_hist().lock() else { return out };
+    let n = pids.iter().filter_map(|p| m.get(p)).map(|e| e.1[0].len()).max().unwrap_or(0);
+    for v in out.iter_mut() {
+        v.resize(n, 0.0);
+    }
+    for e in pids.iter().filter_map(|p| m.get(p)) {
+        for (k, h) in e.1.iter().enumerate() {
+            let off = n - h.len();
+            for (i, x) in h.iter().enumerate() {
+                out[k][off + i] += x;
+            }
+        }
+    }
+    out
+}
+
+/// The parent of `p`, if it is still running: a process can only have been started by one
+/// that existed before it (otherwise the id was reused after the real parent exited)
+pub fn parent_of<'a>(procs: &'a [Proc], p: &Proc) -> Option<&'a Proc> {
+    if p.ppid == 0 || p.ppid == p.pid {
+        return None;
+    }
+    procs.iter().find(|q| q.pid == p.ppid && q.created <= p.created)
 }
 
 /// Cycles all processors spent idle since boot

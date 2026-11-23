@@ -124,6 +124,8 @@ impl Gpu {
 #[derive(Clone, Copy, Default)]
 pub struct ProcGpu {
     pub util: f32,
+    /// The kind of its busiest engine
+    pub engine: &'static str,
     pub dedicated: u64,
     pub shared: u64,
 }
@@ -198,9 +200,13 @@ impl GpuSampler {
             slot.1 += v;
             *per_proc.entry((pid, e.luid, eng)).or_default() += v;
         }
-        for ((pid, _, _), v) in per_proc {
+        for ((pid, luid, eng), v) in per_proc {
             let p = procs.entry(pid).or_default();
-            p.util = p.util.max(v.min(100.0));
+            let v = v.min(100.0);
+            if v > p.util || p.engine.is_empty() {
+                p.engine = per_engine.get(&(luid, eng)).map_or("Other", |e| engine_kind(&e.0));
+            }
+            p.util = p.util.max(v);
         }
         for g in gpus.iter_mut() {
             let mut kinds: Vec<Engine> = Vec::new();
@@ -247,6 +253,18 @@ impl GpuSampler {
             }
         }
         (gpus, procs)
+    }
+}
+
+/// The engine kinds the details panel explains, as fixed names
+fn engine_kind(k: &str) -> &'static str {
+    match k {
+        "3D" => "3D",
+        "Copy" => "Copy",
+        "VideoDecode" => "VideoDecode",
+        "VideoEncode" => "VideoEncode",
+        _ if k.starts_with("Compute") => "Compute",
+        _ => "Other",
     }
 }
 

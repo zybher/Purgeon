@@ -262,7 +262,8 @@ pub fn physical_cores() -> usize {
 /// or debug. Everything per-process comes from system-wide queries (NtQuerySystemInformation,
 /// performance counters, kernel trace events) or this query-only handle.
 pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-/// The single exception to the policy above: asked for only after the user confirms End task,
+/// One of the exceptions to the policy above, all of which only act on the user's choice (the
+/// others are Boost's scheduling rights, see `boost` and `steady`): asked for only after the user confirms End task,
 /// on that one process, and the handle is closed straight away (see `platform::end_process`).
 pub const PROCESS_TERMINATE: u32 = 0x0001;
 

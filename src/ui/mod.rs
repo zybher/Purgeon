@@ -1,5 +1,6 @@
 //! The window: title bar, sidebar, and the page area.
 
+mod detail;
 mod graph;
 pub mod overlay;
 mod pages;
@@ -62,6 +63,8 @@ pub struct App {
     interval: usize,
     dwm_done: bool,
     table: table::TableState,
+    /// The details panel that slides in when a program is clicked
+    detail: detail::Panel,
     shot: Option<crate::shot::Shot>,
     trimmed: bool,
     was_focused: bool,
@@ -111,6 +114,7 @@ impl App {
             interval: 1,
             dwm_done: false,
             table: table::TableState::from_args(),
+            detail: detail::Panel::default(),
             shot: crate::shot::Shot::from_env(),
             trimmed: false,
             was_focused: true,
@@ -131,6 +135,7 @@ impl App {
             }
             self.page = p;
             self.page_at = Instant::now();
+            self.detail.close_now();
         }
     }
 
@@ -305,7 +310,10 @@ impl eframe::App for App {
         if let Some(s) = self.shared.take() {
             self.snaps += 1;
             if self.snaps % 30 == 0 {
-                let live: std::collections::HashSet<&str> = s.procs.iter().filter_map(|p| p.path.as_deref()).collect();
+                let mut live: std::collections::HashSet<&str> = s.procs.iter().filter_map(|p| p.path.as_deref()).collect();
+                // games keep their icons while they're closed
+                let games = crate::games::known();
+                live.extend(games.iter().flat_map(|g| g.iter()).filter_map(|g| g.icon.as_deref()));
                 icons::retain(ctx, &live);
             }
             self.snap = Some(s);
@@ -388,6 +396,7 @@ impl eframe::App for App {
             if let Some(m) = morph::take(ctx) {
                 self.morph = Some(m);
                 self.page = Page::Dashboard;
+                self.detail.close_now();
                 // the page rises in once the bar has nearly filled the window
                 self.page_at = Instant::now() + std::time::Duration::from_millis(230);
             }
@@ -432,6 +441,8 @@ impl eframe::App for App {
             let clip = Rect::from_min_max(pos2(content.min.x + 1.0, content.min.y + 1.0), content.max - vec2(1.0, 1.0));
             cui.set_clip_rect(clip.intersect(ui.clip_rect()));
             cui.multiply_opacity(t);
+            // the Processes list makes room for the details panel instead of sitting under it
+            let open_k = self.detail.openness(ctx);
             match &self.snap {
                 None => {
                     cui.painter().text(content.center(), Align2::CENTER_CENTER, "Reading the system…", reg(14.0), txt_faint());
@@ -442,7 +453,8 @@ impl eframe::App for App {
                     let nav = match page {
                         Page::Dashboard => pages::dashboard(&mut cui, &s, scroll),
                         Page::Processes => {
-                            self.table.show(&mut cui, &s);
+                            let room = (detail::width(content) - PAGE_PAD + 12.0) * open_k;
+                            self.table.show(&mut cui, &s, room);
                             None
                         }
                         Page::Cpu => pages::cpu(&mut cui, &s, scroll),
@@ -459,6 +471,7 @@ impl eframe::App for App {
                     if let Some(pg) = nav {
                         self.go(pg);
                     }
+                    self.detail.show(ctx, content, &s);
                 }
             }
             if self.uac_note {

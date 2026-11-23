@@ -65,8 +65,13 @@ and write down anything that looks wrong.
 - [ ] Reset brings back Alt+Shift+P, and the tray menu shows the current shortcut
 - [ ] The new shortcut still works after quitting and starting Purgeon again
 
-## Boost an app (Dashboard)
-- [ ] Pick a game from "Choose an open app…" and click Boost. The card says "Priority raised" and "Power plan: High performance"
+## Boost a game (Dashboard)
+- [ ] The row lists your installed games and no other apps; running ones come first
+- [ ] On a PC with Epic, GOG, Riot, Ubisoft, EA, Battle.net or Xbox games: those show up too
+- [ ] Open a game that runs on Java or .NET: its tile shows CPU and RAM, and other Java or .NET apps don't count
+- [ ] Hover a tile in the Boost row: it lights up and says "Boost", and the tiles hold still
+- [ ] Click "N more" and "Show less": the row unfolds and folds smoothly
+- [ ] Click a game's tile. The row says "Priority: Above normal" and "Power plan: High performance"
 - [ ] While the game runs, Task Manager > Details > right-click the game > Set priority shows Above normal
 - [ ] Windows Settings > System > Power shows the High performance plan while the game runs (on some PCs only in Control Panel > Power Options)
 - [ ] Close the game: the power plan goes back to the one you had before
@@ -75,6 +80,18 @@ and write down anything that looks wrong.
 - [ ] Quit Purgeon from the tray while boosting: priority and power plan go back
 - [ ] With Roblox (or another anti-cheat game), check what the card says. If it says the game doesn't allow it, that's expected
 - [ ] Does the game feel any different? Honest answer welcome, it's meant as a small nudge
+- [ ] As a standard user, the boosted card offers "Elevate to test". After approving, it offers "Run 5 min test"
+- [ ] Run the test and keep playing in one spot: about 5 minutes later a notification appears, and the card shows deepest dip, 1% low and average FPS without and with Boost
+- [ ] During the test with Steadier frames off, Task Manager shows the game's priority switching between Normal and Above normal; afterwards it is Above normal again
+- [ ] Alt-tab out during the test: it says Paused and Boost is on; go back and that round runs again
+- [ ] Cancel, Stop boost, closing the game and Quit during a test: none leaves Boost or the power plan in the wrong state
+- [ ] Run the test twice in the same spot: both runs reach the same conclusion
+- [ ] Steadier frames (experimental): switch it on with Roblox open. Does it say "preferring the 8 fast ones", or that Roblox refused?
+- [ ] Click Lower on an app: Task Manager > Details shows Below normal. Switch to that app or play sound in it: Normal within a few seconds
+- [ ] Undo, the switch, Stop boost, closing the game and Quit each put the lowered app back to Normal
+- [ ] End Purgeon in Task Manager while an app is lowered, then start it again: the app is back at Normal
+- [ ] Play normally (fights, getting shot or flung) through two or three tests with it on: do the deepest dips get shallower?
+- [ ] Voice chat, music and the other apps you use still behave while it is on
 
 ## Free up memory (Dashboard)
 - [ ] Leave Purgeon open for 10+ minutes with apps you're not using (Discord, Steam, a second browser). They show up in the list
@@ -107,9 +124,30 @@ and write down anything that looks wrong.
 - [ ] Processes page: End task in the details panel asks first, as before
 - [ ] Dashboard: the "busy apps" card now sits under the four cards and shows the five apps holding the most memory as tiles, biggest first, all in GB (the bars are sized against the biggest). Hover a tile to see the exe name and how many processes it has
 - [ ] Processes page: when the order changes, the row slide feels neither too fast nor too slow
+- [ ] Shrink the window as small as it goes and drag its edges around with the pointer over the Dashboard graphs: no crash, and the GPU graph's readout puts the time on a second line
 
 ## Accuracy
 - [ ] Open Roblox Studio: Purgeon's RAM number for it comes close to the ~10 GB that Resource Monitor showed
 
 ## Sensors page
 - [ ] Scroll down: the CPU temperature tile reads "Needs a driver"
+
+## Details panel
+- [ ] Processes has no "Group by name" switch any more; every program is one row (chrome.exe ×30), and the second line says what it is ("91 processes · Windows service host")
+- [ ] Clicking a row opens the panel on the right and the list makes room for it; clicking the same row again, the X, or Esc closes it
+- [ ] Arrow keys move between programs and the panel follows
+- [ ] Run a Python script (`python some_script.py`): its panel says "Python script" and the full path. With several scripts running, the panel for python.exe lists each one, and clicking one opens it with its command line
+- [ ] svchost.exe: the panel lists its copies with the services each hosts; opening one shows "Services"
+- [ ] msedgewebview2.exe: the panel says which app it shows web content for (Teams, Widgets, Claude…)
+- [ ] chrome.exe / claude.exe: each process is named by its job (Tab or site, Graphics helper, Network service, Main process)
+- [ ] Start a busy loop in Python (`while True: pass`): the panel says "Keeping one CPU thread fully busy"
+- [ ] Copy a big file: the copying program's panel says it's mostly reading or writing (needs Elevate)
+- [ ] Play a YouTube video: the browser's panel mentions the GPU's video decode engine
+- [ ] "Last minute" graphs are already filled when the panel opens, and slide along each second
+- [ ] "Started by" reads right: an app you opened says you started it; a service says Windows; the parent link opens the parent
+- [ ] Open location shows the file selected in File Explorer; Search opens a web search; Priority changes stick (check Task Manager > Details)
+- [ ] End task on one process, and End all on a program with several, ask first and report what happened. End all on svchost.exe refuses with a note
+- [ ] CPU, Memory, Disk, Network and GPU pages all read the same way: main graph, five key numbers, "Who's using it" (click a program to open the panel), then a closed "More details" bar
+- [ ] "More details" opens and closes: CPU's per-core graphs, Memory's breakdown, each disk and adapter, GPU engines and sensors, and the video memory list (whose rows also open the panel)
+- [ ] Dashboard's Top CPU / Top memory rows and the memory tiles open the panel too
+- [ ] Without Elevate: Disk's list shows "Who's moving data" and Network's shows "Who's connected"; the panel says to Elevate for disk and network

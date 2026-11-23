@@ -4,6 +4,18 @@
 use eframe::egui::{self, ColorImage, ViewportCommand};
 use std::time::Instant;
 
+/// True in a screenshot run, which must leave the PC and the saved settings as they are
+pub fn on() -> bool {
+    std::env::var_os("PURGEON_SHOT").is_some()
+}
+
+/// `PURGEON_SHOT_SIZE=860x1400`: the window's size for the capture
+pub fn size() -> Option<[f32; 2]> {
+    let v = std::env::var("PURGEON_SHOT_SIZE").ok().filter(|_| on())?;
+    let (w, h) = v.split_once('x')?;
+    Some([w.parse().ok()?, h.parse().ok()?])
+}
+
 pub struct Shot {
     path: String,
     start: Instant,

@@ -3,8 +3,10 @@
 # Purgeon
 A detailed Windows system monitor for CPU, RAM, VRAM, disk and more. Written fully in Rust.
 
-Purgeon only reads system-wide counters and never touches another program's memory, so it is
-safe to keep open next to games with anti-cheat. How each number is measured, and where it can be
+For monitoring, Purgeon only reads system-wide counters and never touches another program's
+memory, so it is made to sit next to games with anti-cheat. Boost and its experimental part do
+change settings Windows keeps for a process, and only once you switch them on
+(see [Boost a game](#boost-a-game)). How each number is measured, and where it can be
 wrong, is in [docs/ACCURACY.md](docs/ACCURACY.md).
 
 ## Compared with Task Manager
@@ -72,13 +74,41 @@ On the **Settings** page you can make the bar bigger (100%, 125%, 150%, or Auto,
 press the new keys. It needs two of Ctrl, Alt and Shift (or one with an F key), so it never takes
 a key other apps use on their own. Both are saved in `%APPDATA%\Purgeon\settings.ini`.
 
-## Boost an app
+## Boost a game
 
-On the Dashboard, pick a game or app and click **Boost**. Whenever it runs, Purgeon raises
+On the Dashboard, click a game in the **Boost a game** row. The row lists the games found on the PC
+(launcher records, plus programs that ship with a game engine or store SDK), running ones first;
+finding them only reads files and the registry. Whenever it runs, Purgeon raises
 its priority one step (Normal to Above normal, never higher) and switches Windows to the High
-performance power plan. When the app closes, the boost is turned off, or Purgeon quits, the
+performance power plan. When the game closes, the boost is turned off, or Purgeon quits, the
 priority and the power plan go back to what they were. Purgeon remembers the pick and boosts the
-app every time it runs.
+game every time it runs.
+
+To see whether it does anything for a game, click **Run 5 min test** on the boosted game's card and
+keep playing. Purgeon plays 24 rounds off and on (off, on, on, off) and compares the deepest dip
+(the worst fifth of a second in a round, whatever caused it), the 1% low and the average FPS. It says
+"No measurable difference" unless the change is at least 2% and clearly bigger than the swing between
+rounds. Dips that come at random and differ in depth are hard to measure: one run can miss a real
+gain, so that answer isn't proof that nothing changed. The test pauses while the game isn't in
+front. Counting frames needs administrator, the same as the overlay's FPS.
+
+### Steadier frames (experimental)
+
+Off until you switch it on, on the boosted game's card. It has not been shown to help any game yet.
+
+- On a CPU with fast and efficient cores, the game prefers the fast ones (a Windows CPU set, the
+  soft kind of affinity). Cores that you or the game already chose are left alone.
+- It suggests busy background apps. Only those you click **Lower** on drop from Normal to Below
+  normal, while the game runs. One is back at Normal while it is in front, has sound or uses the GPU.
+- Windows' own programs, services, games, anti-cheat, launchers, browsers, media and voice apps and
+  anything running as administrator are never offered. Nothing is closed.
+- Everything is put back when the game closes, the switch goes off, or Boost stops. After a crash
+  the next start puts back what it changed. Programs that a lowered app started meanwhile can stay
+  at Below normal until they exit, if they are ones Purgeon won't touch or Purgeon crashed.
+
+With it on, the test keeps Boost on and compares Boost alone against Boost plus this. It uses no
+injection, driver or memory access, but no anti-cheat maker lists such changes as allowed, and
+some block them.
 
 This is honest help, not magic: it makes a small difference when the CPU is busy with other
 things, and none when the graphics card is what limits a game. Some games' anti-cheat refuses
@@ -94,9 +124,37 @@ window (tray and background apps) is ended. A few seconds later the card reports
 memory actually changed. Purgeon never closes anything on its own, and there's no "clean all
 memory" button: emptying every app's memory at once makes the PC slower, not faster.
 
+## What is this, and why is it busy?
+
+The CPU, Memory, Disk, Network and GPU pages share one layout: the main graph, five key numbers,
+a "Who's using it" list of the programs using the most, and a "More details" bar that opens the
+technical parts (per-core graphs, memory breakdown, each disk and adapter, GPU engines and sensors).
+
+Click any program, in Processes, on the Dashboard, or in a "Who's using it" list, and a panel
+slides in on the right with:
+
+- **What it is**, in plain words. For script runners it reads the command line, so `python.exe`
+  says "Python script: `C:\bots\scraper.py`". Chrome, Edge and Electron apps (Discord, VS Code,
+  Claude) name each process's job ("Tab or site", "Graphics helper", "Network service").
+  `svchost.exe` lists the Windows services each copy hosts, and `msedgewebview2.exe` names the app
+  it shows web pages for. Well-known Windows processes get a one-line description.
+- **Why it's busy**: a few sentences built from fixed rules and the measured numbers, such as
+  "Keeping one CPU thread fully busy", "Mostly writing to disk, 40 MB/s", "Using about 35% of
+  the GPU's video decode engine: playing or streaming video", or "Memory grew by 300 MB in the
+  last minute".
+- **Last minute** graphs of its CPU, memory, disk, GPU and network.
+- **Details** for a single process: when it started, who started it (with a link to the parent),
+  its file, publisher, version, priority and full command line. Open connections list the
+  addresses it talks to.
+- Buttons to open the file's location, search the web for it, change its priority, or end it.
+
+Processes always shows one row per program (chrome.exe ×30 is one row); its panel lists every
+process, and clicking one opens that process. Per-program GPU and network numbers are Windows'
+own estimates and are marked with ≈. A few protected Windows processes keep their command line
+and file private even from an administrator.
+
 ## Keyboard
 
-The Processes page keeps the list to four measures (CPU, memory, disk and GPU, each with a bar
-against the busiest app); click an app for everything else (location, memory split, video
-memory, threads, handles) in a panel on the right. Start typing to filter, arrow keys move the selection, Delete ends the
-selected process after a confirm, Esc clears the search or selection, Ctrl+F focuses search.
+On the Processes page, start typing to filter, arrow keys move between programs (the panel
+follows), Delete ends the selected program after a confirm, Esc clears the search or closes the
+panel, Ctrl+F focuses search.

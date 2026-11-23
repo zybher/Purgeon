@@ -209,3 +209,84 @@ impl NetSampler {
         m
     }
 }
+
+/// Where a connection goes
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Reach {
+    Internet,
+    Local,
+    ThisPc,
+}
+
+/// One remote address these processes hold established TCP connections to
+#[derive(Clone)]
+pub struct Peer {
+    pub addr: String,
+    pub port: u16,
+    pub reach: Reach,
+    /// Connections to it
+    pub count: u32,
+}
+
+/// The addresses these processes are connected to over TCP, most connections first. Read on
+/// demand for the details panel (no administrator needed).
+pub fn peers(pids: &[u32]) -> Vec<Peer> {
+    let mut ns = NetSampler::default();
+    ns.buf.resize(8192, 0);
+    let mut m: HashMap<(String, u16), (Reach, u32)> = HashMap::new();
+    for af in [AF_INET, AF_INET6] {
+        let n = ns.table(true, af);
+        let base = ns.buf.as_ptr() as *const u8;
+        let cap = ns.buf.len() * 8;
+        // MIB_TCPROW_OWNER_PID: state 0, remote addr 12, remote port 16, pid 20 (24 bytes)
+        // MIB_TCP6ROW_OWNER_PID: remote addr 24, remote port 44, state 48, pid 52 (56 bytes)
+        let (size, st_off, ra_off, rp_off, pid_off) = if af == AF_INET { (24, 0, 12, 16, 20) } else { (56, 48, 24, 44, 52) };
+        for i in 0..n {
+            let row = 4 + i * size;
+            if row + size > cap {
+                break;
+            }
+            unsafe {
+                let pid: u32 = rd(base, row + pid_off);
+                if !pids.contains(&pid) || rd::<u32>(base, row + st_off) != TCP_STATE_ESTABLISHED {
+                    continue;
+                }
+                let port = u16::from_be(rd::<u32>(base, row + rp_off) as u16);
+                let (addr, reach) = if af == AF_INET {
+                    let ip: [u8; 4] = rd(base, row + ra_off);
+                    (std::net::Ipv4Addr::from(ip).to_string(), reach_v4(ip))
+                } else {
+                    let ip: [u8; 16] = rd(base, row + ra_off);
+                    let a = std::net::Ipv6Addr::from(ip);
+                    match a.to_ipv4_mapped() {
+                        Some(v4) => (v4.to_string(), reach_v4(v4.octets())),
+                        None => {
+                            let reach = if a.is_loopback() {
+                                Reach::ThisPc
+                            } else if (ip[0] & 0xfe) == 0xfc || (ip[0] == 0xfe && (ip[1] & 0xc0) == 0x80) {
+                                Reach::Local
+                            } else {
+                                Reach::Internet
+                            };
+                            (a.to_string(), reach)
+                        }
+                    }
+                };
+                m.entry((addr, port)).or_insert((reach, 0)).1 += 1;
+            }
+        }
+    }
+    let mut v: Vec<Peer> = m.into_iter().map(|((addr, port), (reach, count))| Peer { addr, port, reach, count }).collect();
+    v.sort_by(|a, b| a.reach.cmp(&b.reach).then(b.count.cmp(&a.count)).then(a.addr.cmp(&b.addr)));
+    v
+}
+
+fn reach_v4(ip: [u8; 4]) -> Reach {
+    if ip[0] == 127 {
+        Reach::ThisPc
+    } else if super::etw::is_public(ip) {
+        Reach::Internet
+    } else {
+        Reach::Local
+    }
+}
